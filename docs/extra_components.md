@@ -95,10 +95,10 @@ cost.
 
 With both components switched on, light curve $\lambda$ is modelled as
 
-$$
+```math
 F_\lambda(t) = C_\lambda + \sum_{k=1}^{K_\lambda} b_{\lambda,k}\,P_k\big(x(t)\big)
 + S_\lambda \int_0^\infty \psi_\lambda(\tau)\,X(t-\tau)\,\mathrm d\tau ,
-$$
+```
 
 where:
 - $C_\lambda$ is the band's constant offset;
@@ -114,19 +114,19 @@ With $K_\lambda = 0$ and no diffuse continuum, this is the standard model.
 
 With `diffuse_continuum=True` the response is a mixture,
 
-$$
+```math
 \psi_\lambda(\tau) = (1 - f_\lambda)\,\psi_{\mathrm{disc}}(\tau\,|\,\lambda)
 + f_\lambda\,\psi_{\mathrm{LN}}(\tau;\,\tilde\tau_\lambda, s_\lambda),
-$$
+```
 
 where $\psi_{\mathrm{disc}}$ is the band's usual response (physical or free
 lag). The diffuse component is a log-normal in delay,
 
-$$
+```math
 \psi_{\mathrm{LN}}(\tau;\,\tilde\tau, s) = \frac{1}{\sqrt{2\pi}\,\sigma\,\tau}
 \exp\!\left[-\frac{(\ln\tau - \ln\tilde\tau)^2}{2\sigma^2}\right],
 \qquad \tau > 0, \qquad \sigma = s\ln 10 ,
-$$
+```
 
 and zero for $\tau \le 0$. This is Cackett et al. (2022)'s form, with their
 $M = \ln\tilde\tau$ and $S = \sigma$. Its moments are:
@@ -134,8 +134,8 @@ $M = \ln\tilde\tau$ and $S = \sigma$. Its moments are:
 | Quantity | Value |
 |---|---|
 | median | $\tilde\tau$ |
-| mean | $\tilde\tau\,e^{\sigma^2/2}$ |
-| mode | $\tilde\tau\,e^{-\sigma^2}$ |
+| mean | $\tilde\tau\mkern3mu e^{\sigma^2/2}$ |
+| mode | $\tilde\tau\mkern3mu e^{-\sigma^2}$ |
 | rms of $\log_{10}\tau$ | $s$ |
 
 Three parameters per band describe it:
@@ -159,10 +159,10 @@ response:
 
 The mean delay is the weighted mean of the two parts,
 
-$$
+```math
 \langle\tau\rangle_\lambda = (1 - f_\lambda)\,\langle\tau\rangle_{\mathrm{disc}}
 + f_\lambda\,\tilde\tau_\lambda\,e^{\sigma_\lambda^2/2} .
-$$
+```
 
 So a modest diffuse fraction with a delay of days can lengthen a band's
 apparent lag far more than it changes the disc.
@@ -183,31 +183,31 @@ there. It is differentiable in all three parameters.
 With `background_order=K`, a light curve gains $K$ Legendre polynomials in
 the normalised time
 
-$$
+```math
 x(t) = \frac{2(t - t_0)}{t_1 - t_0} - 1 \in [-1, 1],
-$$
+```
 
 where $t_0$ and $t_1$ are the first and last observation times over **all**
 light curves. Every light curve's background, and the plots, therefore use
 the same time axis.
 
 The polynomials follow Bonnet's recursion,
-$(k+1)P_{k+1} = (2k+1)\,x\,P_k - k\,P_{k-1}$, with $P_0 = 1$ and $P_1 = x$.
+$(k+1)P_{k+1} = (2k+1)\mkern3mu x\mkern3mu P_k - k\mkern3mu P_{k-1}$, with $P_0 = 1$ and $P_1 = x$.
 $P_0$ is left out, because the constant is already the offset $C_\lambda$.
 
 Legendre polynomials rather than plain powers keep the columns close to
 orthogonal over the campaign, since
-$\int_{-1}^{1} P_j P_k\,\mathrm dx = 2\delta_{jk}/(2k+1)$. The coefficients
+$\int_{-1}^{1} P_j P_k\mkern3mu \mathrm dx = 2\delta_{jk}/(2k+1)$. The coefficients
 are then nearly independent and well conditioned, which plain powers of $t$
 are not. Because $|P_k| \le 1$ on $[-1, 1]$, each coefficient is roughly the
 amplitude of its term.
 
 Each coefficient has the prior
 
-$$
+```math
 b_{\lambda,k} \sim \mathcal N\big(0,\ (w\,\mathrm{std}(y_\lambda))^2\big),
 \qquad w = 1 ,
-$$
+```
 
 so a trend up to about the light curve's own variability is expected
 ($w$ is `model.BACKGROUND_PRIOR_WIDTH`). The
@@ -229,12 +229,12 @@ $\boldsymbol y = M\boldsymbol\theta + \boldsymbol\epsilon$, with the linear para
 widths ($\boldsymbol\theta \sim \mathcal N(0, I)$) and
 $\boldsymbol\epsilon \sim \mathcal N(0, D)$,
 
-$$
+```math
 p(\boldsymbol y\,|\,\boldsymbol z) = \mathcal N(\boldsymbol y;\ \boldsymbol m,\ D + MM^\top).
-$$
+```
 
 Each light curve's background contributes $K_\lambda$ columns,
-$w\,\mathrm{std}(y_\lambda)\,P_k(x(t))$, to $M$, non-zero only on that light
+$w\mkern3mu \mathrm{std}(y_\lambda)\mkern3mu P_k(x(t))$, to $M$, non-zero only on that light
 curve's rows. They sit after the Fourier and offset columns
 (`model._linear_marginal`).
 
@@ -284,9 +284,9 @@ Two cautions:
 **Deciding whether a component is warranted.** After `optimise()`,
 `ef.log_evidence` holds the Laplace estimate of the log evidence,
 
-$$
+```math
 \ln Z \approx -U(\boldsymbol z^\star) + \tfrac d2\ln 2\pi + \tfrac12\ln\det\Sigma ,
-$$
+```
 
 where:
 - $U$ is the negative log marginal posterior and $\boldsymbol z^\star$ its
@@ -359,7 +359,7 @@ three Legendre basis functions over the campaign.*
 `synthetic.generate_synthetic_dataset`:
 - **Bands and sampling:** five bands from u to z, 120 epochs each over 250
   days, 3 per cent noise, and pycream2's default (skew-normal) response.
-- **Disc:** $M_\mathrm{BH} = 10^8\,M_\odot$, $\log\dot m = 0.3$,
+- **Disc:** $M_\mathrm{BH} = 10^8\mkern3mu M_\odot$, $\log\dot m = 0.3$,
   $i = 35^\circ$.
 - **Two kinds of data set:**
   - *plain*: no extra components;

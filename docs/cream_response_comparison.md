@@ -43,7 +43,7 @@ Both codes get the same disc:
 
 | Quantity | Value |
 |---|---|
-| Black-hole mass | $10^{7.51}\,M_\odot$ (NGC 5548; Pancoast et al. 2014) |
+| Black-hole mass | $10^{7.51}\mkern3mu M_\odot$ (NGC 5548; Pancoast et al. 2014) |
 | Temperature at one light-day, $T_1$ | 19,400 K (pycream2's `log_mdot` = 3.079) |
 | Temperature slope | 3/4 (CREAM: `slope_v` = `slope_i` = 0.75) |
 | Inner radius | $3R_\mathrm{S}$ (CREAM: `rinsch` = 1) |
@@ -157,7 +157,7 @@ differ in two ways that affect the innermost disc, where these lags come from:
 - **The inner edge.**
   - pycream2's temperature profile includes the zero-torque factor
     $(1-\sqrt{r_\mathrm{in}}/\sqrt{r})^{1/4}$.
-  - Its response starts at the temperature peak, $1.36\,r_\mathrm{in}$ for
+  - Its response starts at the temperature peak, $1.36\mkern3mu r_\mathrm{in}$ for
     slope 3/4 (see [Thin-disk response function](thin_disk_response.md)).
   - In CREAM the zero-torque factor is commented out of the temperature used
     by `tfbx`, and the radial integral starts at $r_\mathrm{in}$.

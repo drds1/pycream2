@@ -109,15 +109,21 @@ flowchart TD
 With the nonlinear parameters $z$ fixed, every prediction is linear in the
 linear parameters $\theta$, which have Gaussian priors:
 
-$$y = M(z)\,\theta + \varepsilon, \qquad \theta \sim \mathcal N(0, I), \qquad \varepsilon \sim \mathcal N(0, D),$$
+```math
+y = M(z)\,\theta + \varepsilon, \qquad \theta \sim \mathcal N(0, I), \qquad \varepsilon \sim \mathcal N(0, D),
+```
 
 so exactly, with no approximation,
 
-$$p(y \mid z) = \mathcal N\big(y;\; 0,\; D + M M^\top\big), \qquad p(\theta \mid y, z) = \mathcal N\big(\hat\theta,\; P^{-1}\big),\quad P = I + M^\top D^{-1} M.$$
+```math
+p(y \mid z) = \mathcal N\big(y;\; 0,\; D + M M^\top\big), \qquad p(\theta \mid y, z) = \mathcal N\big(\hat\theta,\; P^{-1}\big),\quad P = I + M^\top D^{-1} M.
+```
 
 The only approximation in `.optimise()` is the next step,
 
-$$p(z \mid y) \approx \mathcal N\big(z^\star,\; H^{-1}\big), \qquad z^\star = \arg\max_z p(z \mid y), \qquad H = -\nabla^2 \log p(z \mid y)\big|_{z^\star},$$
+```math
+p(z \mid y) \approx \mathcal N\big(z^\star,\; H^{-1}\big), \qquad z^\star = \arg\max_z p(z \mid y), \qquad H = -\nabla^2 \log p(z \mid y)\big|_{z^\star},
+```
 
 in NumPyro's unconstrained coordinates (logs of positive parameters,
 logits of bounded ones). Full derivation:
@@ -208,7 +214,9 @@ probably generous, but it hasn't been tuned across datasets. Raise
 
 Samples are autocorrelated. What matters is the **effective sample size**,
 
-$$\text{ESS} = \frac{N}{1 + 2\sum_{k\ge1}\rho_k},$$
+```math
+\text{ESS} = \frac{N}{1 + 2\sum_{k\ge1}\rho_k},
+```
 
 where $\rho_k$ is the chain's autocorrelation at lag $k$. With dense mass
 the benchmark gave ESS of 413 to 700 from 500 draws. A few hundred
@@ -222,7 +230,9 @@ prints ESS and $\hat R$ for every parameter.
 One chain can't diagnose convergence against itself. Several chains from
 independent starts let the Gelman–Rubin statistic compare them:
 
-$$\hat R = \sqrt{\frac{\widehat{\operatorname{var}}^+}{W}}, \qquad \widehat{\operatorname{var}}^+ = \frac{N-1}{N}W + \frac1N B,$$
+```math
+\hat R = \sqrt{\frac{\widehat{\operatorname{var}}^+}{W}}, \qquad \widehat{\operatorname{var}}^+ = \frac{N-1}{N}W + \frac1N B,
+```
 
 with $W$ the mean within-chain variance and $B$ the between-chain
 variance. $\hat R \approx 1$ (below ~1.01) means the chains agree.
@@ -266,7 +276,9 @@ The driver is a sum of $n_f$ sinusoids on a log-spaced grid from the
 longest period the baseline $T$ can show to the shortest the cadence can
 resolve:
 
-$$\omega_\text{min} = \frac{2\pi}{T}, \qquad \omega_\text{max} = \frac{\pi}{\Delta t_\text{min}},$$
+```math
+\omega_\text{min} = \frac{2\pi}{T}, \qquad \omega_\text{max} = \frac{\pi}{\Delta t_\text{min}},
+```
 
 a Nyquist-style limit, with $\Delta t_\text{min}$ taken as the 5th
 percentile of the observation gaps (robust to a few close pairs). Each
@@ -280,7 +292,9 @@ cadence is very irregular.
 
 The response function is evaluated on
 
-$$\tau_j = \tau_\text{max}\left(\frac{j}{n_\tau - 1}\right)^{p}, \qquad j = 0, \dots, n_\tau-1,$$
+```math
+\tau_j = \tau_\text{max}\left(\frac{j}{n_\tau - 1}\right)^{p}, \qquad j = 0, \dots, n_\tau-1,
+```
 
 with $p$ = `tau_grid_power`. Grading ($p > 1$) packs points near
 $\tau = 0$, where short-wavelength responses are narrow (the disk lag grows
@@ -301,12 +315,12 @@ uses precomputed matrices, so its cost barely changes with grid size.
 
 The driver's Fourier coefficients get Gaussian priors whose variance
 follows a power spectrum $P(\omega)$, discretised on the grid as
-$\sigma_k^2 = P(\omega_k)\,\Delta\omega_k$:
+$\sigma_k^2 = P(\omega_k)\mkern3mu \Delta\omega_k$:
 
 | `drw_prior` | $P(\omega)$ | Hyperparameters |
 |---|---|---|
 | `False` (random walk, default) | $\sigma_\text{drw}^2 / \omega^2$ | `sigma_drw` |
-| `True` (damped random walk) | $\sigma_\text{drw}^2\, \tau_\text{drw} / \big(1 + (\omega \tau_\text{drw})^2\big)$ | `sigma_drw`, `tau_drw` |
+| `True` (damped random walk) | $\sigma_\text{drw}^2\mkern3mu  \tau_\text{drw} / \big(1 + (\omega \tau_\text{drw})^2\big)$ | `sigma_drw`, `tau_drw` |
 
 The DRW flattens below $\omega \approx 1/\tau_\text{drw}$. That turnover is
 only measurable if the baseline is several times $\tau_\text{drw}$
@@ -323,7 +337,7 @@ compares the fitted $P(\omega)$ with the coefficients.
 ### `lag_mode`: `"physical"` (default) or `"free"`
 
 - **`"physical"`**: the band's mean lag follows the thin-disk law
-  $\tau \propto M_\text{BH}^{2/3}\,\dot M^{1/3}\,\lambda^{4/3}$ through the
+  $\tau \propto M_\text{BH}^{2/3}\mkern3mu \dot M^{1/3}\mkern3mu \lambda^{4/3}$ through the
   shared `log_mdot`, and its shape through the shared inclination. Use it
   for continuum bands reprocessed by the disk.
 - **`"free"`**: the band gets its own lag `tau_{band}`. Use it for
@@ -342,7 +356,9 @@ confidently to lags 3 to 4 times too long. For free-lag fits, use
 When on, the band's quoted errors are rescaled and inflated by two fitted
 nuisance parameters:
 
-$$\sigma_\text{eff} = \sqrt{(s\,\sigma_\text{quoted})^2 + j^2}, \qquad s \sim \text{LogNormal}(0, 0.5), \quad j \sim \text{HalfNormal}(\overline{\sigma_\text{quoted}}).$$
+```math
+\sigma_\text{eff} = \sqrt{(s\,\sigma_\text{quoted})^2 + j^2}, \qquad s \sim \text{LogNormal}(0, 0.5), \quad j \sim \text{HalfNormal}(\overline{\sigma_\text{quoted}}).
+```
 
 Underestimated errors make every other posterior look tighter than it
 really is. Turn this on for real data whose error bars you don't fully

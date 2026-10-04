@@ -75,7 +75,18 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
-  - pymdownx.superfences
+  # ```math fences (GitHub's own display-maths syntax) render as maths here too, so
+  # every docs page renders on both GitHub and the docs site; $$ blocks don't
+  # survive GitHub's Markdown parsing (a line starting with + becomes a list item,
+  # and \, loses its backslash).
+  - pymdownx.superfences:
+      custom_fences:
+        - name: math
+          class: arithmatex
+          format: !!python/object/apply:pymdownx.arithmatex.arithmatex_fenced_format
+            kwds:
+              mode: generic
+              tag: pre
   - pymdownx.details
 
 extra_javascript:

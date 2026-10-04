@@ -374,7 +374,7 @@ lamppost height in the delay).*
   hides it.
 - **The mean lags fall by 0.027 days from face-on to 80 degrees.** That is
   the lamppost term $h_x(\cos 0 - \cos 80^\circ) = 0.029$ days for this
-  $10^8\,M_\odot$ disc, to within quadrature error, so
+  $10^8\mkern3mu M_\odot$ disc, to within quadrature error, so
   $\langle\tau\rangle - h_x\cos i$ is flat to about 0.5 per cent.
 - **The old Gaussian in τ** (section 5) raised the means to about 1.9 days
   and made them drift about 10 per cent upwards with inclination. It was

@@ -52,21 +52,29 @@ document keeps them:
 
 The driver is a Fourier series on a fixed frequency grid $\omega_k$,
 
-$$X(t) = \sum_{k=1}^{n_f} \big[S_k \sin(\omega_k t) + C_k \cos(\omega_k t)\big],$$
+```math
+X(t) = \sum_{k=1}^{n_f} \big[S_k \sin(\omega_k t) + C_k \cos(\omega_k t)\big],
+```
 
 and band $b$ sees it through a causal response $\psi_b(\tau)$ that depends on
 the nonlinear disk parameters (`log_mdot`, inclination), scaled and offset:
 
-$$y_b(t) = S_b \int_0^\infty \psi_b(\tau)\, X(t - \tau)\, d\tau + C_b + \varepsilon, \qquad \varepsilon \sim \mathcal N(0, \sigma^2).$$
+```math
+y_b(t) = S_b \int_0^\infty \psi_b(\tau)\, X(t - \tau)\, d\tau + C_b + \varepsilon, \qquad \varepsilon \sim \mathcal N(0, \sigma^2).
+```
 
 Because $X$ is a sum of sinusoids, the convolution is closed-form
 (`CLAUDE.md` decision #2). With the response's Fourier coefficients
 
-$$A_k = \int_0^\infty \psi(\tau)\cos(\omega_k\tau)\,d\tau, \qquad B_k = \int_0^\infty \psi(\tau)\sin(\omega_k\tau)\,d\tau,$$
+```math
+A_k = \int_0^\infty \psi(\tau)\cos(\omega_k\tau)\,d\tau, \qquad B_k = \int_0^\infty \psi(\tau)\sin(\omega_k\tau)\,d\tau,
+```
 
 the echo is
 
-$$\int \psi(\tau) X(t-\tau)\,d\tau = \sum_k \big[\sin(\omega_k t)(S_k A_k + C_k B_k) + \cos(\omega_k t)(C_k A_k - S_k B_k)\big].$$
+```math
+\int \psi(\tau) X(t-\tau)\,d\tau = \sum_k \big[\sin(\omega_k t)(S_k A_k + C_k B_k) + \cos(\omega_k t)(C_k A_k - S_k B_k)\big].
+```
 
 The sampled parameters are the nonlinear ones (about 8 to 10 of them) plus
 $2 n_f$ Fourier coefficients (as unit-Normal `S_raw`, `C_raw`, scaled by the
@@ -82,7 +90,9 @@ for the benchmark dataset.
 `transfer_coeffs` evaluates $A_k$ and $B_k$ by the trapezoidal rule on the
 lag grid $\tau_j$, with weights $w_j$:
 
-$$A_k \approx \sum_{j=1}^{n_\tau} w_j\, \psi(\tau_j) \cos(\omega_k \tau_j) = (W_c\,\psi)_k, \qquad (W_c)_{kj} = w_j \cos(\omega_k\tau_j),$$
+```math
+A_k \approx \sum_{j=1}^{n_\tau} w_j\, \psi(\tau_j) \cos(\omega_k \tau_j) = (W_c\,\psi)_k, \qquad (W_c)_{kj} = w_j \cos(\omega_k\tau_j),
+```
 
 and likewise $B = W_s \psi$ with $(W_s)_{kj} = w_j\sin(\omega_k\tau_j)$. Both
 $\omega_k$ and $\tau_j$ are fixed for the whole fit (built once by
@@ -154,7 +164,9 @@ Hamiltonian Monte Carlo simulates a particle with position $z$ (the
 unconstrained parameters) and momentum $p$ in the potential
 $U(z) = -\log p(z \mid y)$, with Hamiltonian
 
-$$H(z, p) = U(z) + \tfrac12\, p^\top M^{-1} p, \qquad p \sim \mathcal N(0, M).$$
+```math
+H(z, p) = U(z) + \tfrac12\, p^\top M^{-1} p, \qquad p \sim \mathcal N(0, M).
+```
 
 The mass matrix $M$ sets how momentum maps onto movement. NUTS's warmup
 estimates it from the posterior covariance seen so far: a **diagonal**
@@ -217,16 +229,20 @@ predicts.
 Hold the nonlinear parameters fixed. Then every prediction is **linear**
 in the $2n_f$ Fourier coefficients and in the offsets $C_b$. Collect those
 into a vector $\theta$ in prior-whitened form: `S_raw`, `C_raw` are already
-$\mathcal N(0,1)$, and each offset is written as $5\,u_b$ with
+$\mathcal N(0,1)$, and each offset is written as $5\mkern3mu u_b$ with
 $u_b \sim \mathcal N(0,1)$, matching its $\mathcal N(0, 5^2)$ prior. Stacking
 every observation of every band (and a driver light curve, if one is
 registered):
 
-$$y = M\theta + \varepsilon, \qquad \theta \sim \mathcal N(0, I_p), \qquad \varepsilon \sim \mathcal N(0, D), \qquad D = \operatorname{diag}(\sigma_i^2).$$
+```math
+y = M\theta + \varepsilon, \qquad \theta \sim \mathcal N(0, I_p), \qquad \varepsilon \sim \mathcal N(0, D), \qquad D = \operatorname{diag}(\sigma_i^2).
+```
 
 Row $i$ of $M$, for an observation of band $b$ at time $t_i$, is
 
-$$M_{i,\cdot} = \Big[\, S_b\, s_k\big(\sin(\omega_k t_i)A_{bk} - \cos(\omega_k t_i)B_{bk}\big)_k,\;\; S_b\, s_k\big(\sin(\omega_k t_i)B_{bk} + \cos(\omega_k t_i)A_{bk}\big)_k,\;\; 5\,e_b \,\Big],$$
+```math
+M_{i,\cdot} = \Big[\, S_b\, s_k\big(\sin(\omega_k t_i)A_{bk} - \cos(\omega_k t_i)B_{bk}\big)_k,\;\; S_b\, s_k\big(\sin(\omega_k t_i)B_{bk} + \cos(\omega_k t_i)A_{bk}\big)_k,\;\; 5\,e_b \,\Big],
+```
 
 where $s_k$ is the power-spectrum prior scale and $e_b$ the band's indicator
 vector. $M$ depends on the nonlinear parameters only, through $A$, $B$,
@@ -234,7 +250,9 @@ $S_b$ and $s_k$.
 
 A linear-Gaussian model integrates out exactly:
 
-$$y \mid \text{nonlinear} \;\sim\; \mathcal N\big(0,\; \Sigma\big), \qquad \Sigma = D + M M^\top.$$
+```math
+y \mid \text{nonlinear} \;\sim\; \mathcal N\big(0,\; \Sigma\big), \qquad \Sigma = D + M M^\top.
+```
 
 $\Sigma$ is $N \times N$ (here $N = 500$), but $MM^\top$ has rank only
 $p = 2n_f + n_\text{offsets}$ (here 125). Write $\tilde M = D^{-1/2}M$,
@@ -242,21 +260,29 @@ $\tilde y = D^{-1/2}y$ and $P = I_p + \tilde M^\top \tilde M$. Then the matrix
 determinant lemma and the Woodbury identity reduce everything to
 $p \times p$ algebra:
 
-$$\log|\Sigma| = \log|D| + \log|P|,$$
+```math
+\log|\Sigma| = \log|D| + \log|P|,
+```
 
-$$y^\top \Sigma^{-1} y \;=\; \min_\theta \Big[\, \lVert \tilde y - \tilde M\theta \rVert^2 + \lVert\theta\rVert^2 \Big] \;=\; \lVert \tilde y - \tilde M\hat\theta\rVert^2 + \lVert\hat\theta\rVert^2, \qquad \hat\theta = P^{-1}\tilde M^\top \tilde y.$$
+```math
+y^\top \Sigma^{-1} y \;=\; \min_\theta \Big[\, \lVert \tilde y - \tilde M\theta \rVert^2 + \lVert\theta\rVert^2 \Big] \;=\; \lVert \tilde y - \tilde M\hat\theta\rVert^2 + \lVert\hat\theta\rVert^2, \qquad \hat\theta = P^{-1}\tilde M^\top \tilde y.
+```
 
 (The middle equality is the completed square: minimising the joint
 $-\log p(y, \theta)$ over $\theta$ leaves exactly the marginal's quadratic
 form.) The marginal log-likelihood added to the model, as a single
 `numpyro.factor`, is
 
-$$\log p(y \mid \text{nonlinear}) = -\tfrac12\Big[\lVert \tilde y - \tilde M\hat\theta\rVert^2 + \lVert\hat\theta\rVert^2 + \log|P| + \log|D| + N\log 2\pi\Big].$$
+```math
+\log p(y \mid \text{nonlinear}) = -\tfrac12\Big[\lVert \tilde y - \tilde M\hat\theta\rVert^2 + \lVert\hat\theta\rVert^2 + \log|P| + \log|D| + N\log 2\pi\Big].
+```
 
 NUTS now samples only the ~8 nonlinear parameters. The linear ones are not
 lost: their conditional posterior is exactly
 
-$$\theta \mid y, \text{nonlinear} \;\sim\; \mathcal N\big(\hat\theta,\; P^{-1}\big),$$
+```math
+\theta \mid y, \text{nonlinear} \;\sim\; \mathcal N\big(\hat\theta,\; P^{-1}\big),
+```
 
 so after the fit, `EchoFit._add_linear_draws` draws one $\theta$ per
 posterior sample and stores it under the usual site names (`S_raw`, `C_raw`,
@@ -274,11 +300,13 @@ The first implementation took a Cholesky factor $P = LL^\top$. It was
 correct in float64 and badly wrong in float32 (JAX's default). $P$'s
 condition number on the benchmark is
 
-$$\kappa(P) \approx 3 \times 10^{7},$$
+```math
+\kappa(P) \approx 3 \times 10^{7},
+```
 
 because the data pin some directions of $\theta$ down very tightly (hundreds
 of points at 5% errors) while the prior alone controls others. Cholesky's
-relative error grows like $\kappa(P)\,\epsilon_{32}$, with
+relative error grows like $\kappa(P)\mkern3mu \epsilon_{32}$, with
 $\epsilon_{32} \approx 6 \times 10^{-8}$, so it is of order one here. The
 log-likelihood *value* came out only slightly wrong (~0.02). The *gradients*
 were ~9% off, and noisy gradients are what HMC cannot tolerate: energy
@@ -290,17 +318,20 @@ Two fixes were considered:
 
 - **Global float64** (`jax_enable_x64`): exact, but process-wide. A library
   shouldn't flip it on for its user.
-- **QR of the stacked least-squares system**, adopted. Minimising
-  $\lVert\tilde y - \tilde M\theta\rVert^2 + \lVert\theta\rVert^2$ is ordinary least
-  squares on
+- **QR of the stacked least-squares system**, adopted (below).
 
-  $$\begin{bmatrix}\tilde M \\ I_p\end{bmatrix}\theta \approx \begin{bmatrix}\tilde y \\ 0\end{bmatrix}, \qquad \begin{bmatrix}\tilde M \\ I_p\end{bmatrix} = QR,$$
+Minimising $\lVert\tilde y - \tilde M\theta\rVert^2 + \lVert\theta\rVert^2$
+is ordinary least squares on
 
-  with $R^\top R = P$, so $\log|P| = 2\sum_i \log|R_{ii}|$,
-  $\hat\theta = R^{-1} Q_{1:N}^\top\tilde y$, and a conditional draw is
-  $\theta = \hat\theta + R^{-1}\eta$, $\eta \sim \mathcal N(0, I)$. The key
-  property: $\kappa(R) = \sqrt{\kappa(P)} \approx 5800$. QR never forms $P$,
-  so it never squares the conditioning.
+```math
+\begin{bmatrix}\tilde M \\ I_p\end{bmatrix}\theta \approx \begin{bmatrix}\tilde y \\ 0\end{bmatrix}, \qquad \begin{bmatrix}\tilde M \\ I_p\end{bmatrix} = QR,
+```
+
+with $R^\top R = P$, so $\log|P| = 2\sum_i \log|R_{ii}|$,
+$\hat\theta = R^{-1} Q_{1:N}^\top\tilde y$, and a conditional draw is
+$\theta = \hat\theta + R^{-1}\eta$, $\eta \sim \mathcal N(0, I)$. The key
+property: $\kappa(R) = \sqrt{\kappa(P)} \approx 5800$. QR never forms $P$,
+so it never squares the conditioning.
 
 Separately, the quadratic form is always evaluated as the residual at the
 minimiser, never as the textbook $\tilde y^\top\tilde y - b^\top P^{-1}b$
@@ -466,7 +497,9 @@ actually appears to the eye.
 **Disk temperature.** The Shakura–Sunyaev viscous profile
 (`forward_model.disk_temperature_profile`) is
 
-$$T(r) = T_\text{ref}\left(\frac{r}{r_\text{ref}}\right)^{-3/4}\left(\frac{1 - \sqrt{r_\text{in}/r}}{1 - \sqrt{r_\text{in}/r_\text{ref}}}\right)^{1/4},$$
+```math
+T(r) = T_\text{ref}\left(\frac{r}{r_\text{ref}}\right)^{-3/4}\left(\frac{1 - \sqrt{r_\text{in}/r}}{1 - \sqrt{r_\text{in}/r_\text{ref}}}\right)^{1/4},
+```
 
 anchored so $T(r_\text{ref}) = b/\lambda_\text{ref}$ (Wien's law) at the
 lag-scaling reference radius. The second factor, the zero-torque inner
@@ -479,13 +512,18 @@ boundary, sends $T \to 0$ at the ISCO $r_\text{in}$ itself.
 2. Integrate against the CIE 1931 2° colour-matching functions (the
    analytic multi-lobe fit of Wyman, Sloan and Shirley 2013) over
    380–780 nm to get tristimulus values:
-   $X = \int B_\lambda \bar x\, d\lambda$, and likewise $Y$, $Z$.
+   $X = \int B_\lambda \bar x\mkern3mu d\lambda$, and likewise $Y$, $Z$.
 3. Convert to linear sRGB (D65 white point) with the standard matrix
-   $\begin{bmatrix}R\\G\\B\end{bmatrix} = \begin{bmatrix} 3.2406 & -1.5372 & -0.4986\\ -0.9689 & 1.8758 & 0.0415\\ 0.0557 & -0.2040 & 1.0570\end{bmatrix}\begin{bmatrix}X\\Y\\Z\end{bmatrix}$,
-   clip negatives, and divide by the largest channel. That keeps
+   (below), clip negatives, and divide by the largest channel. That keeps
    chromaticity only: a real disk's inner rings are also vastly brighter,
    which would saturate any display.
 4. Apply sRGB gamma encoding.
+
+The matrix in step 3:
+
+```math
+\begin{bmatrix}R\\G\\B\end{bmatrix} = \begin{bmatrix} 3.2406 & -1.5372 & -0.4986\\ -0.9689 & 1.8758 & 0.0415\\ 0.0557 & -0.2040 & 1.0570\end{bmatrix}\begin{bmatrix}X\\Y\\Z\end{bmatrix}
+```
 
 The result runs from deep orange-red at 1000–1500 K, through white near
 6500 K (the D65 white point, as it should be), to pale blue above

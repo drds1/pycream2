@@ -991,6 +991,30 @@ match; `pycream2.__version__` reads the installed metadata);
       (`ef.optimise_restarts`, `plot_optimise_restarts`, a report section). It is a check for a unique
       optimum, not for Gaussianity; `ngc5548_paper/psis.py` shows the PSIS check for the latter.
 
+23. **Optional extra components, both off by default (October 2026, a direct request; full write-up
+    `docs/extra_components.md`, figures from `scripts/plot_extra_components.py`).**
+    - **Diffuse continuum** (`add_lightcurve(..., diffuse_continuum=True)`): a second reprocessor with a
+      log-normal delay distribution (`forward_model.lognormal_response`), mixed into the band's response,
+      `psi -> (1 - f) psi + f psi_LN` (`mix_diffuse_continuum`), after Cackett, Zoghbi & Ulrich (2022,
+      ApJ 925, 29). Sites `dce_fraction_{band}` (Uniform(0, 1)), `dce_delay_{band}` (median, days,
+      LogUniform(`DCE_DELAY_MIN`, tau_max)), `dce_width_{band}` (dex, Uniform(`DCE_WIDTH_PRIOR_DEX`)).
+      Both parts are area-normalised, so the gain still multiplies the whole response and nothing
+      downstream changes (closed-form transfer, marginalisation, plots).
+    - **Slow background** (`add_lightcurve`/`add_driver_lightcurve(..., background_order=K)`): Legendre
+      `P_1..P_K` in time over the whole campaign (`legendre_background_basis`; `EchoFit._background_t_range`
+      is shared by every light curve and the plots), coefficients `bg_{name}` ~ Normal(0,
+      `BACKGROUND_PRIOR_WIDTH` std(y)). Linear, so `_linear_marginal` integrates them out with the Fourier
+      terms and offsets (extra columns after the offsets; brute-force-checked in
+      `tests/test_extra_components.py`). `_optimum_init_values` and `_add_linear_draws` had hard-coded
+      lists of linear sites and had to learn about them: any new linear component must be added there too.
+    - Persisted across `resume()` (`run_manager` band/driver npz keys; tested, the recurring bug class).
+    - **`EchoFit.log_evidence`** (Laplace, set by `optimise()`) was added so users can test whether a
+      component is warranted; the recovery test checks it prefers components that are really present.
+    - **`optimise()` NaN restarts fixed**: L-BFGS's first, gradient-scaled step from a start far up a
+      steep slope could overflow (sigma_drw = inf, log_mdot = 33) to a NaN potential, from which SciPy's line
+      search cannot backtrack, so the restart aborted with a NaN (seen on NGC 5548 and in the extra-components
+      tests). The objective now returns `_NONFINITE_POTENTIAL` (1e10) with a zero gradient there.
+
 ## Known rough edges / things to check before trusting results on real data
 
 - `synthetic.py`'s ground truth is generated with the *same* forward model

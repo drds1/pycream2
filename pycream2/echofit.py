@@ -31,6 +31,7 @@ from .model import reverberation_model
 from .inference import run_mcmc, run_mcmc_chunked
 from .forward_model import (
     transfer_coeffs, compute_echo, driver_at, tophat_response_free, transfer_matrices, fourier_basis,
+    legendre_background_basis, mix_diffuse_continuum,
 )
 from .grid_utils import estimate_dt_min, graded_tau_grid, check_tau_grid_resolution
 from . import plotting
@@ -55,6 +56,10 @@ RESTART_AGREEMENT_SD = 0.5
 # The ripple artefacts this exists for are off by far more (negative, -1000,
 # 1e6 against ~1).
 CURVATURE_RATIO_LIMIT = 4.0
+
+# optimise()'s objective returns this (with a zero gradient) wherever the
+# potential or its gradient is not finite, so L-BFGS's line search backtracks.
+_NONFINITE_POTENTIAL = 1e10
 
 
 def _posterior_scale_curvature(batch_potential, z, f0, eigvals, eigvecs, min_step=0.05, n_iter=3):
@@ -198,6 +203,7 @@ class EchoFit:
         self.mcmc = None
         self.optimum: Optional[dict] = None
         self.optimise_restarts: Optional[list] = None
+        self.log_evidence: Optional[float] = None
         self.samples: Optional[dict] = None
         self.extra_fields: dict = {}
         self._extra_fields_by_chain: dict = {}
@@ -211,7 +217,7 @@ class EchoFit:
     # ------------------------------------------------------------------
     def add_lightcurve(
         self, name: str, wavelength: float, t, y, yerr, lag_mode: str = "physical",
-        fit_error_model: bool = False,
+        fit_error_model: bool = False, diffuse_continuum: bool = False, background_order: int = 0,
     ):
         """Register a single band's (possibly irregularly sampled) light curve.
 
@@ -242,9 +248,30 @@ class EchoFit:
             exactly as before. Fix either nuisance parameter to a known
             value with ``fixed_params={"sigma_scale_{name}": 1.0}`` etc. if
             you want the model structure on but one of the two pinned.
+        diffuse_continuum : bool
+            Off by default. If ``True``, this band's response gets a second,
+            extended reprocessor with a log-normal delay distribution, e.g.
+            diffuse continuum emission from the broad-line region (Cackett,
+            Zoghbi & Ulrich 2022): ``psi -> (1 - f) psi + f psi_LN``, with three
+            new parameters, ``dce_fraction_{name}`` (``f``, its share of the
+            band's integrated response), ``dce_delay_{name}`` (median delay,
+            days) and ``dce_width_{name}`` (rms width, dex). See
+            ``docs/extra_components.md``.
+        background_order : int
+            ``0`` (default) keeps this band's constant offset ``C_{name}`` as
+            its only non-reverberating part. ``K > 0`` adds a slowly varying
+            background, Legendre polynomials ``P_1 .. P_K`` in time over the
+            whole campaign with coefficients ``bg_{name}`` (a length-``K``
+            vector), for variability unrelated to reverberation, such as a
+            slowly changing host or narrow-line contribution or a long-term
+            trend (cf. detrending, Welsh 1999). Linear, so ``optimise()`` and
+            ``marginalise_linear=True`` integrate it out exactly. ``1`` or ``2``
+            is usually enough; see ``docs/extra_components.md``.
         """
         if lag_mode not in ("physical", "free"):
             raise ValueError(f"lag_mode must be 'physical' or 'free', got {lag_mode!r}")
+        if int(background_order) < 0:
+            raise ValueError(f"background_order must be >= 0, got {background_order!r}")
         t, y, yerr = np.asarray(t, float), np.asarray(y, float), np.asarray(yerr, float)
         order = np.argsort(t)
         self.bands[name] = {
@@ -254,11 +281,13 @@ class EchoFit:
             "wavelength": float(wavelength),
             "lag_mode": lag_mode,
             "fit_error_model": bool(fit_error_model),
+            "diffuse_continuum": bool(diffuse_continuum),
+            "background_order": int(background_order),
         }
         return self
 
     # ------------------------------------------------------------------
-    def add_driver_lightcurve(self, t, y, yerr, fit_error_model: bool = False):
+    def add_driver_lightcurve(self, t, y, yerr, fit_error_model: bool = False, background_order: int = 0):
         """Register a light curve that directly (zero-lag) observes the
         driver itself -- e.g. an X-ray/lamppost continuum, or a directly
         monitored AGN continuum anchoring an emission-line fit. Modelled as
@@ -274,12 +303,18 @@ class EchoFit:
         fit_error_model : bool
             Same meaning as ``add_lightcurve``'s: off by default, turns on
             ``sigma_scale_driver``/``sigma_jitter_driver`` if ``True``.
+        background_order : int
+            Same meaning as ``add_lightcurve``'s: ``K > 0`` adds a slow
+            Legendre background with coefficients ``bg_driver``.
         """
+        if int(background_order) < 0:
+            raise ValueError(f"background_order must be >= 0, got {background_order!r}")
         t, y, yerr = np.asarray(t, float), np.asarray(y, float), np.asarray(yerr, float)
         order = np.argsort(t)
         self.driver_data = {
             "t": t[order], "y": y[order], "yerr": yerr[order],
             "fit_error_model": bool(fit_error_model),
+            "background_order": int(background_order),
         }
         return self
 
@@ -346,6 +381,22 @@ class EchoFit:
         return self
 
     # ------------------------------------------------------------------
+    def _background_t_range(self):
+        """The campaign's time span, over which every light curve's slow
+        background basis is defined (so ``P_k`` means the same thing for all
+        of them, and in the plots)."""
+        all_t = np.concatenate([d["t"] for d in self.bands.values()]
+                               + ([self.driver_data["t"]] if self.driver_data is not None else []))
+        return float(all_t.min()), float(all_t.max())
+
+    def _background_basis(self, d, t=None):
+        """``(n, K)`` Legendre background basis for light curve ``d`` at times
+        ``t`` (default: its own), or ``None`` if it has no background."""
+        order = d.get("background_order", 0)
+        if not order:
+            return None
+        return legendre_background_basis(d["t"] if t is None else t, self._background_t_range(), order)
+
     def _model_kwargs(self):
         bands_jax = {
             name: {
@@ -355,6 +406,8 @@ class EchoFit:
                 "wavelength": d["wavelength"],
                 "lag_mode": d["lag_mode"],
                 "fit_error_model": d.get("fit_error_model", False),
+                "diffuse_continuum": d.get("diffuse_continuum", False),
+                "background_basis": self._background_basis(d),
                 "basis": fourier_basis(self.freqs, d["t"]),
             }
             for name, d in self.bands.items()
@@ -366,6 +419,7 @@ class EchoFit:
                 "y": jnp.asarray(self.driver_data["y"]),
                 "yerr": jnp.asarray(self.driver_data["yerr"]),
                 "fit_error_model": self.driver_data.get("fit_error_model", False),
+                "background_basis": self._background_basis(self.driver_data),
                 "basis": fourier_basis(self.freqs, self.driver_data["t"]),
             }
         return dict(
@@ -425,6 +479,8 @@ class EchoFit:
             if d.get("fit_error_model", False):
                 valid.add(f"sigma_scale_{name}")
                 valid.add(f"sigma_jitter_{name}")
+            if d.get("diffuse_continuum", False):
+                valid |= {f"dce_fraction_{name}", f"dce_delay_{name}", f"dce_width_{name}"}
         return valid
 
     def _init_strategy(self, num_chains: int = 1):
@@ -552,6 +608,7 @@ class EchoFit:
             ef.add_lightcurve(
                 name, wavelength=d["wavelength"], t=d["t"], y=d["y"], yerr=d["yerr"],
                 lag_mode=d["lag_mode"], fit_error_model=d.get("fit_error_model", False),
+                diffuse_continuum=d.get("diffuse_continuum", False), background_order=d.get("background_order", 0),
             )
         driver_path = run_dir / "driver.npz"
         if driver_path.exists():
@@ -559,6 +616,7 @@ class EchoFit:
             ef.add_driver_lightcurve(
                 t=driver["t"], y=driver["y"], yerr=driver["yerr"],
                 fit_error_model=driver.get("fit_error_model", False),
+                background_order=driver.get("background_order", 0),
             )
 
         grid = run_manager.load_samples_npz(run_dir / "grid.npz")
@@ -838,6 +896,9 @@ class EchoFit:
         result; ``self.extra_fields`` stays empty (no NUTS diagnostics
         exist). Also sets ``self.optimum`` (the constrained peak values),
         ``self.laplace_covariance`` (unconstrained space),
+        ``self.log_evidence`` (the Laplace estimate of the log evidence,
+        ``-U* + d/2 ln 2 pi + 1/2 ln det(cov)``, for comparing models fitted
+        to the same data, e.g. with and without an extra component),
         ``self.optimise_result`` (scipy's ``OptimizeResult``) and
         ``self.optimise_timings`` (seconds spent in L-BFGS, the Hessian and
         the posterior draws, all including one-off JIT compilation, plus
@@ -894,7 +955,16 @@ class EchoFit:
 
         def objective(z):
             v, g = value_and_grad(jnp.asarray(z, dtype=z0.dtype))
-            return float(v), np.asarray(g, dtype=np.float64)
+            v, g = float(v), np.asarray(g, dtype=np.float64)
+            if not (np.isfinite(v) and np.all(np.isfinite(g))):
+                # A trial step far outside the posterior (e.g. L-BFGS's first,
+                # gradient-scaled step from a start high up a steep slope) can
+                # overflow to NaN. SciPy's line search cannot backtrack from a
+                # NaN and aborts the whole restart; a huge finite value makes it
+                # backtrack instead. Found when a restart ran to sigma_drw = inf,
+                # log_mdot = 33 on its first step.
+                return _NONFINITE_POTENTIAL, np.zeros_like(g)
+            return v, g
 
         timings = {}
         t0 = time.perf_counter()
@@ -1066,6 +1136,12 @@ class EchoFit:
             constrain_fn(reverberation_model, (), kwargs, unravel(z_hat), return_deterministic=True).items()
         }
         self.laplace_covariance = cov
+        # Laplace estimate of the log evidence of the marginal posterior (the
+        # linear parameters are integrated out exactly):
+        # ln Z ~ -U* + d/2 ln(2 pi) + 1/2 ln det(cov), for comparing models,
+        # e.g. with and without a diffuse-continuum component or background.
+        _, logdet = np.linalg.slogdet(np.asarray(cov, dtype=np.float64))
+        self.log_evidence = -float(best.fun) + 0.5 * cov.shape[0] * np.log(2.0 * np.pi) + 0.5 * logdet
         self.optimise_result = best
         timings["draws_seconds"] = time.perf_counter() - t0
         self.optimise_timings = timings
@@ -1083,13 +1159,13 @@ class EchoFit:
         if self.marginalise_linear:
             return values
         kwargs = dict(self._model_kwargs(), marginalise_linear=True, draw_linear=True)
+        curves = dict(self.bands, **({"driver": self.driver_data} if self.driver_data is not None else {}))
         n_linear = 2 * len(self.freqs) + sum(
-            f"C_{n}" not in self.fixed_params
-            for n in list(self.bands) + (["driver"] if self.driver_data is not None else [])
+            (f"C_{n}" not in self.fixed_params) + d.get("background_order", 0) for n, d in curves.items()
         )
         substituted = dict(values, linear_eps=jnp.zeros(n_linear))
         trace = handlers.trace(handlers.substitute(handlers.seed(reverberation_model, 0), substituted)).get_trace(**kwargs)
-        for name in ["S_raw", "C_raw"] + [f"C_{n}" for n in list(self.bands) + ["driver"]]:
+        for name in ["S_raw", "C_raw"] + [f"{p}_{n}" for n in curves for p in ("C", "bg")]:
             if name in trace and name not in self.fixed_params:
                 values[name] = np.asarray(trace[name]["value"])
         return values
@@ -1115,6 +1191,8 @@ class EchoFit:
         names = list(self.bands) + (["driver"] if self.driver_data is not None else [])
         return_sites = ["S_raw", "C_raw", "S", "C"] + [f"y_pred_{n}" for n in names]
         return_sites += [f"C_{n}" for n in names if f"C_{n}" not in self.fixed_params]
+        curves = dict(self.bands, **({"driver": self.driver_data} if self.driver_data is not None else {}))
+        return_sites += [f"bg_{n}" for n, d in curves.items() if d.get("background_order", 0)]
         draws = Predictive(reverberation_model, posterior_samples=flat, return_sites=return_sites)(
             jax.random.fold_in(jax.random.PRNGKey(rng_seed), 1), **self._model_kwargs(), draw_linear=True,
         )
@@ -1306,7 +1384,7 @@ class EchoFit:
             slope = (jnp.asarray(self.samples["temperature_slope"])[idx]
                      if "temperature_slope" in self.samples else jnp.full(len(idx), jnp.nan))
 
-        def physical_draw(S_s, C_s, log_mdot_s, incl_s, slope_s, wavelength, S_band_s, C_band_s):
+        def physical_draw(log_mdot_s, incl_s, slope_s, wavelength):
             # Read via the model module's attribute, not a direct import of our
             # own, so that swapping model.response_function (see CLAUDE.md's
             # "swappable by contract" design decision) is reflected here too --
@@ -1318,31 +1396,34 @@ class EchoFit:
                 self.tau_grid, log_mdot=log_mdot_s, wavelength=wavelength,
                 inclination=incl_s, M_BH=self.M_BH, **slope_kwargs,
             )
-            A, B = transfer_coeffs(self.tau_grid, psi, self.freqs)
-            echo = compute_echo(S_s, C_s, self.freqs, A, B, t_fine)
-            y_pred = S_band_s * echo + C_band_s
-            return y_pred, psi
+            return psi
 
-        def free_draw(S_s, C_s, tau_s, S_band_s, C_band_s):
-            psi = tophat_response_free(self.tau_grid, tau_mean=tau_s)
+        def free_draw(tau_s):
+            return tophat_response_free(self.tau_grid, tau_mean=tau_s)
+
+        def echo_draw(S_s, C_s, psi, S_band_s, C_band_s):
             A, B = transfer_coeffs(self.tau_grid, psi, self.freqs)
             echo = compute_echo(S_s, C_s, self.freqs, A, B, t_fine)
-            y_pred = S_band_s * echo + C_band_s
-            return y_pred, psi
+            return S_band_s * echo + C_band_s
+
+        def sample(site):
+            return jnp.asarray(self.samples[site])[idx]
 
         y_pred_samples, psi_samples = {}, {}
         for name, d in self.bands.items():
-            S_band = jnp.asarray(self.samples[f"S_{name}"])[idx]
-            C_band = jnp.asarray(self.samples[f"C_{name}"])[idx]
+            S_band, C_band = sample(f"S_{name}"), sample(f"C_{name}")
             if d["lag_mode"] == "physical":
-                y_pred, psi = jax.vmap(
-                    physical_draw, in_axes=(0, 0, 0, 0, 0, None, 0, 0)
-                )(S, C, log_mdot, inclination, slope, d["wavelength"], S_band, C_band)
+                psi = jax.vmap(physical_draw, in_axes=(0, 0, 0, None))(log_mdot, inclination, slope, d["wavelength"])
             else:
-                tau = jnp.asarray(self.samples[f"tau_{name}"])[idx]
-                y_pred, psi = jax.vmap(
-                    free_draw, in_axes=(0, 0, 0, 0, 0)
-                )(S, C, tau, S_band, C_band)
+                psi = jax.vmap(free_draw)(sample(f"tau_{name}"))
+            if d.get("diffuse_continuum", False):
+                # The same mixture as the model (model.reverberation_model).
+                psi = jax.vmap(lambda p, f, m, w: mix_diffuse_continuum(p, self.tau_grid, f, m, w))(
+                    psi, sample(f"dce_fraction_{name}"), sample(f"dce_delay_{name}"), sample(f"dce_width_{name}"))
+            y_pred = jax.vmap(echo_draw)(S, C, psi, S_band, C_band)
+            basis_fine = self._background_basis(d, t=t_fine)
+            if basis_fine is not None:
+                y_pred = y_pred + sample(f"bg_{name}") @ basis_fine.T
             y_pred_samples[name] = np.asarray(y_pred)
             psi_samples[name] = np.asarray(psi)
 
@@ -1355,9 +1436,13 @@ class EchoFit:
         if self.driver_data is not None:
             S_driver = float(np.mean(self.samples["S_driver"][idx]))
             C_driver = float(np.mean(self.samples["C_driver"][idx]))
+            driver_offset = C_driver
+            basis_driver = self._background_basis(self.driver_data)
+            if basis_driver is not None:
+                driver_offset = C_driver + np.asarray(basis_driver) @ np.mean(self.samples["bg_driver"][idx], axis=0)
             driver_points = (
                 self.driver_data["t"],
-                (self.driver_data["y"] - C_driver) / S_driver,
+                (self.driver_data["y"] - driver_offset) / S_driver,
                 self.driver_data["yerr"] / abs(S_driver),
             )
             if self.driver_data.get("fit_error_model", False):

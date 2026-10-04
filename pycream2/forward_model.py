@@ -228,6 +228,63 @@ def tophat_response_free(tau_grid, tau_mean, width_frac: float = 0.3, edge_softn
     return psi
 
 
+def lognormal_response(tau_grid, median, width_dex):
+    """Causal, area-normalised log-normal response: the delay distribution of
+    an extended reprocessor such as the broad-line region's diffuse
+    continuum emission (Cackett, Zoghbi & Ulrich 2022), with ``ln tau``
+    Gaussian about ``ln(median)``.
+
+    Parameters
+    ----------
+    tau_grid : array_like, shape (n_tau,)
+        Lag grid (days); zero for ``tau <= 0``.
+    median : float
+        Median delay (days), ``exp(M)`` in Cackett et al.'s notation.
+    width_dex : float
+        Standard deviation of ``log10 tau`` (dex), ``S / ln 10`` in theirs.
+        The mean delay is ``median * exp((width_dex ln 10)**2 / 2)``.
+
+    The width is in dex rather than days so that it describes the reprocessor's
+    fractional extent, which is what a broad-line region's geometry sets.
+    Differentiable in both parameters (no hard edges; see CLAUDE.md decision
+    #7's gradient trap).
+    """
+    sigma_ln = jnp.clip(width_dex, 1e-3, None) * jnp.log(10.0)
+    positive = tau_grid > 0.0
+    log_tau = jnp.log(jnp.where(positive, tau_grid, 1.0))
+    z = (log_tau - jnp.log(jnp.clip(median, 1e-6, None))) / sigma_ln
+    raw = jnp.where(positive, jnp.exp(-0.5 * z ** 2) / jnp.where(positive, tau_grid, 1.0), 0.0)
+    trapz = jnp.trapezoid if hasattr(jnp, "trapezoid") else jnp.trapz
+    area = trapz(raw, tau_grid)
+    return raw / jnp.clip(area, 1e-12, None)
+
+
+def mix_diffuse_continuum(psi, tau_grid, fraction, median, width_dex):
+    """A band's response with a diffuse-continuum component:
+    ``(1 - fraction) * psi + fraction * lognormal_response(...)``. Both parts
+    are area-normalised, so ``fraction`` is the diffuse component's share of
+    the band's integrated response (its integrated response is ``fraction``
+    times the band's gain)."""
+    return (1.0 - fraction) * psi + fraction * lognormal_response(tau_grid, median, width_dex)
+
+
+def legendre_background_basis(t, t_range, order):
+    """Slowly varying background basis: Legendre polynomials ``P_1 .. P_order``
+    of time mapped to ``[-1, 1]`` over ``t_range = (t_start, t_end)`` (the whole
+    campaign, shared by every light curve), shape ``(len(t), order)``. ``P_0``
+    is left out: the constant is each light curve's own offset ``C``.
+    Legendre rather than plain powers keeps the columns close to orthogonal
+    over the campaign, so the coefficients are well conditioned."""
+    t = jnp.asarray(t)
+    x = 2.0 * (t - t_range[0]) / (t_range[1] - t_range[0]) - 1.0
+    cols, p_prev, p_cur = [], jnp.ones_like(x), x
+    for k in range(1, order + 1):
+        cols.append(p_cur)
+        # Bonnet's recursion: (k + 1) P_{k+1} = (2k + 1) x P_k - k P_{k-1}.
+        p_prev, p_cur = p_cur, ((2 * k + 1) * x * p_cur - k * p_prev) / (k + 1)
+    return jnp.stack(cols, axis=1) if cols else jnp.zeros((x.shape[0], 0))
+
+
 # ----------------------------------------------------------------------
 # Physical constants for thin_disk_response. Only used to convert the
 # black hole mass into an inner (ISCO) radius -- the overall lag scale

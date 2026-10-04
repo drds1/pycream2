@@ -15,7 +15,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .forward_model import response_function, tophat_response_free, transfer_coeffs, compute_echo, driver_at
+from .forward_model import (
+    response_function, tophat_response_free, transfer_coeffs, compute_echo, driver_at,
+    legendre_background_basis, mix_diffuse_continuum,
+)
 from .grid_utils import estimate_dt_min, graded_tau_grid
 
 # np.trapz was removed in NumPy 2.x in favour of np.trapezoid; this matches
@@ -78,6 +81,8 @@ def generate_synthetic_dataset(
     noise_level: float = 0.02,
     gaps: Optional[Sequence[Tuple[float, float]]] = None,
     seed: int = 0,
+    diffuse_continuum: Optional[Dict[str, Tuple[float, float, float]]] = None,
+    background: Optional[Dict[str, Sequence[float]]] = None,
 ) -> dict:
     """Generate a synthetic multi-band reverberation-mapping dataset.
 
@@ -108,13 +113,29 @@ def generate_synthetic_dataset(
         total point count is spread more densely over the remaining time.
     seed : int
         RNG seed.
+    diffuse_continuum : dict, optional
+        ``band_name -> (fraction, median_delay_days, width_dex)``: mix a
+        log-normal diffuse-continuum response into that band's response, as
+        ``EchoFit.add_lightcurve(..., diffuse_continuum=True)`` models it
+        (``forward_model.mix_diffuse_continuum``). Bands not listed have none.
+    background : dict, optional
+        ``band_name -> [c_1, .., c_K]``: add a slow background
+        ``sum_k c_k P_k(t)``, Legendre polynomials over the whole campaign's
+        time span, exactly the basis ``EchoFit.add_lightcurve(...,
+        background_order=K)`` fits (``forward_model.legendre_background_basis``),
+        so the coefficients are directly comparable with fitted ``bg_{band}``.
 
     Returns
     -------
     data : dict
         ``{"bands": {name: {"t", "y", "yerr", "wavelength"}}, "truth": {...},
-        "freqs": array, "tau_grid": array}``.
+        "freqs": array, "tau_grid": array}``. With ``diffuse_continuum`` or
+        ``background``, each band's truth also has ``"diffuse_continuum"``
+        and/or ``"background"`` (its coefficients) and ``"background_curve"``
+        (at the band's observation times).
     """
+    diffuse_continuum = diffuse_continuum or {}
+    background = background or {}
     rng = np.random.default_rng(seed)
 
     if bands is None:
@@ -147,6 +168,9 @@ def generate_synthetic_dataset(
     S_true = rng.normal(0.0, amp_scale)
     C_true = rng.normal(0.0, amp_scale)
 
+    all_t = np.concatenate(list(t_by_band.values()))
+    t_range = (float(all_t.min()), float(all_t.max()))
+
     out_bands = {}
     per_band_truth = {}
     for name, wavelength in sorted_bands:
@@ -161,12 +185,19 @@ def generate_synthetic_dataset(
                 M_BH=M_BH,
             )
         )
+        if name in diffuse_continuum:
+            psi = np.asarray(mix_diffuse_continuum(psi, tau_grid, *diffuse_continuum[name]))
         A, B = transfer_coeffs(tau_grid, psi, freqs)
         echo = np.asarray(compute_echo(S_true, C_true, freqs, np.asarray(A), np.asarray(B), t))
 
         S_band_true = rng.uniform(0.8, 1.5)
         C_band_true = rng.uniform(-0.5, 0.5)
         y_clean = S_band_true * echo + C_band_true
+        background_curve = None
+        if name in background:
+            coeffs = np.asarray(background[name], dtype=float)
+            background_curve = np.asarray(legendre_background_basis(t, t_range, len(coeffs))) @ coeffs
+            y_clean = y_clean + background_curve
 
         yerr = np.full_like(y_clean, noise_level * (np.std(y_clean) + 1e-3))
         y = y_clean + rng.normal(0.0, yerr)
@@ -182,6 +213,11 @@ def generate_synthetic_dataset(
             "C_band": C_band_true,
             "tau_mean": float(_np_trapz(tau_grid * psi, tau_grid)),
         }
+        if name in diffuse_continuum:
+            per_band_truth[name]["diffuse_continuum"] = tuple(diffuse_continuum[name])
+        if background_curve is not None:
+            per_band_truth[name]["background"] = np.asarray(background[name], dtype=float)
+            per_band_truth[name]["background_curve"] = background_curve
 
     truth = {
         "M_BH": M_BH,

@@ -69,6 +69,8 @@ flowchart TD
 | `title`, `output_dir` | `EchoFit(...)` | `None` | long runs you may need to resume (checkpointed, single chain) | 4 |
 | `lag_mode` | `add_lightcurve` | `"physical"` | emission lines, or any band whose lag shouldn't follow the disk law | 7 |
 | `fit_error_model` | `add_lightcurve`, `add_driver_lightcurve` | `False` | real data whose quoted errors you don't fully trust | 7 |
+| `diffuse_continuum` | `add_lightcurve` | `False` | delays look too long for a disc, or there is a lag excess near the Balmer jump (broad-line-region diffuse continuum) | 7 |
+| `background_order` | `add_lightcurve`, `add_driver_lightcurve` | `0` | slow trends unrelated to reverberation (try 1 or 2, keep it if `log_evidence` rises) | 7 |
 | `n_freq` | `build_grid` | 60 | fewer for speed on short campaigns; more for long, finely sampled ones | 5 |
 | `n_tau` | `build_grid` | 400 | a resolution warning appears | 5 |
 | `tau_max` | `build_grid` | half the baseline | lags are known to be much shorter (sharper grid) | 5 |
@@ -366,6 +368,26 @@ as photometry; the extra variance is model mismatch (and inter-telescope
 calibration) on longer timescales. Without the error model, `.optimise()`
 already fails from 7 bands onwards. `scripts/fit_lightcurves.py
 --fit-error-model` turns it on for every band.
+
+### `diffuse_continuum` (default `False`) and `background_order` (default `0`)
+
+Two optional components, described fully, with the mathematics, priors,
+literature and a synthetic recovery study, in
+[`extra_components.md`](extra_components.md).
+
+- **`diffuse_continuum=True`** adds a second reprocessor with a log-normal
+  delay distribution to the band's response, as for broad-line-region
+  diffuse continuum emission (Cackett, Zoghbi & Ulrich 2022). It has three
+  parameters per band: `dce_fraction_{band}`, `dce_delay_{band}` (median, in
+  days) and `dce_width_{band}` (in dex).
+- **`background_order=K`** adds `K` Legendre polynomials in time to the
+  light curve's constant offset, for slow variability unrelated to
+  reverberation (cf. detrending, Welsh 1999). The coefficients are linear,
+  so `.optimise()` integrates them out exactly.
+
+Both cost extra parameters and can trade off against the disc. Switch them
+on where there is a physical reason, and keep them only if the evidence
+(`ef.log_evidence` after `.optimise()`) prefers them.
 
 ### `add_driver_lightcurve`
 

@@ -143,6 +143,29 @@ everything else. Off by default per light curve so synthetic-data fits
 (where `yerr` genuinely is correct by construction) and any existing
 analysis keep exactly today's likelihood unless explicitly opted in.
 
+Extra-components note: two optional, per-light-curve components, both off
+by default (``EchoFit.add_lightcurve(..., diffuse_continuum=True,
+background_order=K)``; ``docs/extra_components.md`` has the physics, priors
+and references).
+
+* **Diffuse continuum** (bands only): a second reprocessor with a log-normal
+  delay distribution (``forward_model.lognormal_response``), mixed into the
+  band's response, ``psi -> (1 - f) psi + f psi_LN(median, width)``, after
+  Cackett, Zoghbi & Ulrich (2022). Three parameters per band:
+  ``dce_fraction_{name}`` (``f``, the diffuse component's share of the band's
+  integrated response; ``Uniform(0, 1)``), ``dce_delay_{name}`` (its median
+  delay, days; ``LogUniform(DCE_DELAY_MIN, tau_max)``) and ``dce_width_{name}``
+  (its rms width in dex; ``Uniform(*DCE_WIDTH_PRIOR_DEX)``). Because both
+  parts are area-normalised, the band's gain still multiplies the whole
+  response, so nothing else changes, including the linear marginalisation.
+* **Slow background** (bands and the driver light curve): ``K`` Legendre
+  polynomials in time, ``P_1 .. P_K`` over the whole campaign
+  (``forward_model.legendre_background_basis``; the basis arrives
+  precomputed as each light curve's ``"background_basis"``), added to the
+  constant offset with coefficients ``bg_{name}`` (``bg_driver``) ~
+  ``Normal(0, BACKGROUND_PRIOR_WIDTH * std(y))``. They are linear, so with
+  ``marginalise_linear`` they are integrated out exactly like the offsets.
+
 **Linear-parameter marginalisation note** (``marginalise_linear=True``).
 With every nonlinear parameter held fixed (``sigma_drw``/``tau_drw``,
 ``log_mdot``/``inclination``/``tau_{band}``, each ``S_{band}``/``S_driver``,
@@ -183,7 +206,9 @@ import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
-from .forward_model import response_function, tophat_response_free, transfer_coeffs, compute_echo, driver_at
+from .forward_model import (
+    response_function, tophat_response_free, transfer_coeffs, compute_echo, driver_at, mix_diffuse_continuum,
+)
 
 INCLINATION_MAX_DEG = 80.0
 # Uniform prior bounds on the free temperature slope alpha (T ~ r**-alpha,
@@ -197,6 +222,18 @@ TEMPERATURE_SLOPE_PRIOR = (0.5, 2.5)
 # far but still keeps the optimiser off absurd values along the flat
 # log_mdot/alpha direction.
 LOG_MDOT_PRIOR_SD = 5.0
+# Diffuse-continuum component (add_lightcurve(..., diffuse_continuum=True)):
+# its median delay ~ LogUniform(DCE_DELAY_MIN, tau_max) days (scale-free,
+# broad-line-region delays span decades), its width ~ Uniform(*DCE_WIDTH_PRIOR_DEX)
+# in dex (0.05 dex is a 12% spread, about the narrowest a lag grid resolves;
+# 1 dex a factor-of-ten spread), its share of the response ~ Uniform(0, 1).
+DCE_DELAY_MIN = 0.1
+DCE_WIDTH_PRIOR_DEX = (0.05, 1.0)
+# Slow background (add_lightcurve(..., background_order=K)): each Legendre
+# coefficient ~ Normal(0, BACKGROUND_PRIOR_WIDTH * std(y)), i.e. a trend up to
+# about the light curve's own variability. |P_k| <= 1 over the campaign, so a
+# coefficient is roughly the trend's amplitude.
+BACKGROUND_PRIOR_WIDTH = 1.0
 
 
 def drw_prior_scale(freqs: jnp.ndarray, sigma_drw, tau_drw) -> jnp.ndarray:
@@ -379,8 +416,13 @@ def reverberation_model(
         offset_loc, offset_sd = _offset_prior(driver["y"])
         if not offset_is_linear:
             C_driver = _param("C_driver", dist.Normal(offset_loc, offset_sd))
+        bg_basis_driver, bg_sd_driver = _background(driver)
         if not marginalise_linear:
             y_pred_driver = S_driver * driver_at(S, C, freqs, driver["t"], basis=driver.get("basis")) + C_driver
+            if bg_basis_driver is not None:
+                bg_driver = numpyro.sample(
+                    "bg_driver", dist.Normal(0.0, bg_sd_driver).expand([bg_basis_driver.shape[1]]).to_event(1))
+                y_pred_driver = y_pred_driver + bg_basis_driver @ bg_driver
             numpyro.deterministic("y_pred_driver", y_pred_driver)
         if driver.get("fit_error_model", False):
             sigma_scale_driver = _param("sigma_scale_driver", dist.LogNormal(0.0, 0.5))
@@ -393,7 +435,7 @@ def reverberation_model(
             blocks.append(dict(
                 name="driver", y=driver["y"], sigma=sigma_eff_driver, gain=S_driver,
                 S_cols=sin_wt, C_cols=cos_wt, known_offset=None if offset_is_linear else C_driver,
-                offset_loc=offset_loc, offset_sd=offset_sd,
+                offset_loc=offset_loc, offset_sd=offset_sd, bg_cols=bg_basis_driver, bg_sd=bg_sd_driver,
             ))
         else:
             numpyro.sample("obs_driver", dist.Normal(y_pred_driver, sigma_eff_driver), obs=driver["y"])
@@ -444,11 +486,23 @@ def reverberation_model(
         else:
             tau_band = _param(f"tau_{band_name}", dist.Uniform(0.0, tau_max))
             psi = tophat_response_free(tau_grid, tau_mean=tau_band)
+        if d.get("diffuse_continuum", False):
+            psi = mix_diffuse_continuum(
+                psi, tau_grid,
+                fraction=_param(f"dce_fraction_{band_name}", dist.Uniform(0.0, 1.0)),
+                median=_param(f"dce_delay_{band_name}", dist.LogUniform(DCE_DELAY_MIN, tau_max)),
+                width_dex=_param(f"dce_width_{band_name}", dist.Uniform(*DCE_WIDTH_PRIOR_DEX)),
+            )
 
+        bg_basis, bg_sd = _background(d)
         A, B = transfer_coeffs(tau_grid, psi, freqs, matrices=transfer_mats)
         if not marginalise_linear:
             echo = compute_echo(S, C, freqs, A, B, d["t"], basis=d.get("basis"))
             y_pred = S_band * echo + C_band
+            if bg_basis is not None:
+                bg = numpyro.sample(
+                    f"bg_{band_name}", dist.Normal(0.0, bg_sd).expand([bg_basis.shape[1]]).to_event(1))
+                y_pred = y_pred + bg_basis @ bg
             numpyro.deterministic(f"y_pred_{band_name}", y_pred)
 
         if d.get("fit_error_model", False):
@@ -466,7 +520,7 @@ def reverberation_model(
                 name=band_name, y=d["y"], sigma=sigma_eff, gain=S_band,
                 S_cols=sin_wt * A - cos_wt * B, C_cols=sin_wt * B + cos_wt * A,
                 known_offset=None if offset_is_linear else C_band,
-                offset_loc=offset_loc, offset_sd=offset_sd,
+                offset_loc=offset_loc, offset_sd=offset_sd, bg_cols=bg_basis, bg_sd=bg_sd,
             ))
         else:
             numpyro.sample(
@@ -506,6 +560,16 @@ def _gain_prior_loc(y, sigma_drw_prior_scale):
     return jnp.log(jnp.std(y) / sigma_drw_prior_scale)
 
 
+def _background(d):
+    """(basis, prior sd) of a light curve's slow background, or (None, None)
+    if it has none: the precomputed Legendre basis ``d["background_basis"]``
+    (``(n, K)``, K >= 1) and ``BACKGROUND_PRIOR_WIDTH * std(y)``."""
+    basis = d.get("background_basis")
+    if basis is None or basis.shape[1] == 0:
+        return None, None
+    return basis, BACKGROUND_PRIOR_WIDTH * jnp.std(d["y"])
+
+
 def _basis(freqs, t):
     wt = freqs[None, :] * t[:, None]
     return jnp.sin(wt), jnp.cos(wt)
@@ -521,11 +585,18 @@ def _linear_marginal(blocks, prior_scale, draw_linear):
     Linear parameters, in the prior-whitened basis (unit-Normal prior):
     ``S_raw`` (n_freq), ``C_raw`` (n_freq), then one offset per block whose
     ``known_offset`` is ``None`` (``offset = offset_loc + offset_sd * theta``,
-    so the prior-mean offset is subtracted from that block's data first).
+    so the prior-mean offset is subtracted from that block's data first),
+    then each block's slow-background coefficients, if it has any
+    (``bg_cols``, ``(n, K)``; ``coefficient = bg_sd * theta``).
     """
     n_freq = prior_scale.shape[0]
     offset_names = [b["name"] for b in blocks if b["known_offset"] is None]
     n_off = len(offset_names)
+    bg_blocks = [b for b in blocks if b.get("bg_cols") is not None]
+    bg_start, n_bg = {}, 0
+    for b in bg_blocks:
+        bg_start[b["name"]] = n_bg
+        n_bg += b["bg_cols"].shape[1]
 
     rows, ys, sigmas = [], [], []
     for b in blocks:
@@ -536,10 +607,15 @@ def _linear_marginal(blocks, prior_scale, draw_linear):
             ys.append(b["y"] - b["offset_loc"])
         else:
             ys.append(b["y"] - b["known_offset"])
+        bg_part = jnp.zeros((n, n_bg))
+        if b.get("bg_cols") is not None:
+            k0 = bg_start[b["name"]]
+            bg_part = bg_part.at[:, k0:k0 + b["bg_cols"].shape[1]].set(b["bg_cols"] * b["bg_sd"])
         rows.append(jnp.concatenate([
             b["gain"] * b["S_cols"] * prior_scale,
             b["gain"] * b["C_cols"] * prior_scale,
             jnp.ones((n, 1)) * onehot[None, :],
+            bg_part,
         ], axis=1))
         sigmas.append(jnp.broadcast_to(b["sigma"], (n,)))
     y = jnp.concatenate(ys)
@@ -575,6 +651,9 @@ def _linear_marginal(blocks, prior_scale, draw_linear):
     for i, name in enumerate(offset_names):
         b = blocks_by_name[name]
         numpyro.deterministic(f"C_{name}", b["offset_loc"] + theta[2 * n_freq + i] * b["offset_sd"])
+    for b in bg_blocks:
+        k0 = 2 * n_freq + n_off + bg_start[b["name"]]
+        numpyro.deterministic(f"bg_{b['name']}", theta[k0:k0 + b["bg_cols"].shape[1]] * b["bg_sd"])
     for b, row in zip(blocks, rows):
         known = b["offset_loc"] if b["known_offset"] is None else b["known_offset"]
         numpyro.deterministic(f"y_pred_{b['name']}", row @ theta + known)

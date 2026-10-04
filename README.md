@@ -70,6 +70,7 @@ Regenerate with `python scripts/make_fit_animation.py`.*
 - [⏱️ Performance profiling](#-performance-profiling)
 - [🔄 Swapping the response function](#-swapping-the-response-function)
 - [🌈 Emission-line / free-lag mode and driver light curves](#-emission-line--free-lag-mode-and-driver-light-curves)
+- [🧩 Extra components: diffuse continuum and slow backgrounds](#-extra-components-diffuse-continuum-and-slow-backgrounds)
 - [⚠️ Status / caveats](#-status--caveats)
 - [📝 Citing pycream2](#-citing-pycream2)
 
@@ -880,6 +881,48 @@ uses -- reassigning `model.response_function` (as above) is the one place
 to patch, since `echofit.py`'s plotting code reads it the same way
 (module-attribute access, not its own import), so a swap is honoured
 consistently by both fitting and plotting.
+
+## 🧩 Extra components: diffuse continuum and slow backgrounds
+
+Two optional components, both **off by default** and switched on per light
+curve. Full motivation, mathematics, priors and a synthetic recovery study:
+[`docs/extra_components.md`](docs/extra_components.md).
+
+- **Diffuse continuum (a second reprocessor).** The broad-line region's
+  gas emits a diffuse continuum that reverberates too, with longer and
+  broader delays than the disc. That would explain why continuum lags look
+  too long for a standard disc, and the excess around the Balmer jump
+  (Korista & Goad 2001; Lawther et al. 2018; Cackett et al. 2018). Following
+  Cackett, Zoghbi & Ulrich (2022), `diffuse_continuum=True` mixes a
+  log-normal delay distribution into the band's response:
+  `psi = (1 - f) psi_disc + f psi_LN`.
+  - It adds three parameters per band: `dce_fraction_{band}` (`f`, the
+    diffuse component's share of the band's integrated response),
+    `dce_delay_{band}` (its median delay, in days) and `dce_width_{band}`
+    (its rms width, in dex).
+- **Slow background.** UV and optical light curves often carry slow trends
+  unrelated to reverberation, and long-term trends bias lag measurements
+  (Welsh 1999; Edelson et al. 2024 detrended Fairall 9's light curves with a
+  parabola). `background_order=K` adds `K` Legendre polynomials in time to
+  that light curve's constant offset, fitted jointly with everything else
+  rather than subtracted beforehand.
+  - The coefficients are `bg_{band}`, or `bg_driver` for the driver.
+  - They are linear, so `optimise()` and `marginalise_linear=True` integrate
+    them out exactly.
+
+```python
+ef = EchoFit(M_BH=1e8)
+ef.add_lightcurve("u", 3543.0, t_u, y_u, yerr_u, background_order=2)
+ef.add_lightcurve("i", 7625.0, t_i, y_i, yerr_i, diffuse_continuum=True)
+ef.build_grid()
+ef.optimise()
+print(ef.log_evidence)  # Laplace evidence: compare with and without a component
+```
+
+From the command line, add `--diffuse-continuum [BAND ...]` (all bands if
+none are named) or `--background-order K` to `scripts/fit_lightcurves.py`.
+`plot_lightcurve_fits()` shows both components: the response panel shows the
+mixed response, and the model curves include the background.
 
 ## 🌈 Emission-line / free-lag mode and driver light curves
 

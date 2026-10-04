@@ -109,6 +109,19 @@ def _parse_args():
              "instead of trusting the quoted errors exactly. Recommended for real data: on "
              "NGC 5548 all 13 bands only fit cleanly with it on.",
     )
+    parser.add_argument(
+        "--diffuse-continuum", nargs="*", default=None, metavar="BAND",
+        help="Give these bands (every --band/--free-lag-band if none are named) a second, "
+             "log-normal reprocessor, e.g. diffuse continuum from the broad-line region: three "
+             "extra parameters each (dce_fraction_, dce_delay_, dce_width_). Off by default; "
+             "see docs/extra_components.md.",
+    )
+    parser.add_argument(
+        "--background-order", type=int, default=0,
+        help="Add a slowly varying background of this many Legendre terms to every light curve "
+             "(and the driver), for variability unrelated to reverberation. 0 (default) is off; "
+             "see docs/extra_components.md.",
+    )
 
     parser.add_argument("--title", default=None, help="Run name -- enables checkpointed/resumable output management.")
     parser.add_argument("--resume", action="store_true", help="Resume the latest run under --title instead of starting a new fit.")
@@ -188,17 +201,24 @@ def main():
         M_BH=args.m_bh, title=args.title, output_dir=args.output_dir, drw_prior=args.drw_prior,
         marginalise_linear=args.marginalise_linear,
     )
+    # --diffuse-continuum with no band names means every band.
+    band_names = [b[0] for b in args.band] + [b[0] for b in args.free_lag_band]
+    dce_bands = set() if args.diffuse_continuum is None else set(args.diffuse_continuum or band_names)
+    unknown = dce_bands - set(band_names)
+    if unknown:
+        raise SystemExit(f"--diffuse-continuum names unknown band(s): {sorted(unknown)}")
+    extras = dict(fit_error_model=args.fit_error_model, background_order=args.background_order)
     for name, wavelength, path in args.band:
         t, y, yerr = _load_lightcurve(path)
         ef.add_lightcurve(name, wavelength=float(wavelength), t=t, y=y, yerr=yerr,
-                          fit_error_model=args.fit_error_model)
+                          diffuse_continuum=name in dce_bands, **extras)
     for name, wavelength, path in args.free_lag_band:
         t, y, yerr = _load_lightcurve(path)
         ef.add_lightcurve(name, wavelength=float(wavelength), t=t, y=y, yerr=yerr, lag_mode="free",
-                          fit_error_model=args.fit_error_model)
+                          diffuse_continuum=name in dce_bands, **extras)
     if args.driver:
         t, y, yerr = _load_lightcurve(args.driver)
-        ef.add_driver_lightcurve(t=t, y=y, yerr=yerr, fit_error_model=args.fit_error_model)
+        ef.add_driver_lightcurve(t=t, y=y, yerr=yerr, **extras)
 
     build_grid_kwargs = {}
     if args.n_freq is not None:

@@ -40,6 +40,7 @@ nav:
       - Fitting guide: fitting_guide.md
       - Thin-disk response function: thin_disk_response.md
       - Comparison with CREAM's response: cream_response_comparison.md
+      - "Extra components: diffuse continuum and slow backgrounds": extra_components.md
   - Under the hood:
       - How the MCMC works: mcmc_implementation.md
       - Performance and the direct solve: performance_improvements.md

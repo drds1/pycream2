@@ -111,6 +111,8 @@ def save_bands_npz(path, bands: Dict[str, dict]):
         flat[f"{name}__wavelength"] = np.asarray(d["wavelength"])
         flat[f"{name}__lag_mode"] = np.array(d.get("lag_mode", "physical"))
         flat[f"{name}__fit_error_model"] = np.array(d.get("fit_error_model", False))
+        flat[f"{name}__diffuse_continuum"] = np.array(d.get("diffuse_continuum", False))
+        flat[f"{name}__background_order"] = np.array(d.get("background_order", 0))
     np.savez(path, names=np.array(names), **flat)
 
 
@@ -123,6 +125,8 @@ def load_bands_npz(path) -> Dict[str, dict]:
             wavelength=float(z[f"{name}__wavelength"]),
             lag_mode=str(z[f"{name}__lag_mode"]) if f"{name}__lag_mode" in z else "physical",
             fit_error_model=bool(z[f"{name}__fit_error_model"]) if f"{name}__fit_error_model" in z else False,
+            diffuse_continuum=bool(z[f"{name}__diffuse_continuum"]) if f"{name}__diffuse_continuum" in z else False,
+            background_order=int(z[f"{name}__background_order"]) if f"{name}__background_order" in z else 0,
         )
         for name in names
     }
@@ -135,6 +139,7 @@ def save_driver_npz(path, driver: dict):
     np.savez(
         path, t=driver["t"], y=driver["y"], yerr=driver["yerr"],
         fit_error_model=np.array(driver.get("fit_error_model", False)),
+        background_order=np.array(driver.get("background_order", 0)),
     )
 
 
@@ -143,6 +148,7 @@ def load_driver_npz(path) -> dict:
     return dict(
         t=z["t"], y=z["y"], yerr=z["yerr"],
         fit_error_model=bool(z["fit_error_model"]) if "fit_error_model" in z else False,
+        background_order=int(z["background_order"]) if "background_order" in z else 0,
     )
 
 

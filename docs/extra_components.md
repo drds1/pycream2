@@ -206,10 +206,11 @@ Each coefficient has the prior
 
 $$
 b_{\lambda,k} \sim \mathcal N\big(0,\ (w\,\mathrm{std}(y_\lambda))^2\big),
-\qquad w = \texttt{BACKGROUND\_PRIOR\_WIDTH} = 1 ,
+\qquad w = 1 ,
 $$
 
-so a trend up to about the light curve's own variability is expected. The
+so a trend up to about the light curve's own variability is expected
+($w$ is `model.BACKGROUND_PRIOR_WIDTH`). The
 coefficients are `bg_{band}` (or `bg_driver`), one vector of length $K$ per
 light curve. `add_driver_lightcurve(..., background_order=K)` gives the
 driver light curve a background too.
@@ -223,8 +224,8 @@ in:
 - the background coefficients $b_{\lambda,k}$.
 
 All of these have Gaussian priors, so they can be integrated out of the
-likelihood exactly. Writing $\boldsymbol y = M\boldsymbol\theta +
-\boldsymbol\epsilon$, with the linear parameters whitened by their prior
+likelihood exactly. Writing
+$\boldsymbol y = M\boldsymbol\theta + \boldsymbol\epsilon$, with the linear parameters whitened by their prior
 widths ($\boldsymbol\theta \sim \mathcal N(0, I)$) and
 $\boldsymbol\epsilon \sim \mathcal N(0, D)$,
 

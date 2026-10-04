@@ -1409,7 +1409,7 @@ class EchoFit:
         def sample(site):
             return jnp.asarray(self.samples[site])[idx]
 
-        y_pred_samples, psi_samples = {}, {}
+        y_pred_samples, psi_samples, baseline_samples = {}, {}, {}
         for name, d in self.bands.items():
             S_band, C_band = sample(f"S_{name}"), sample(f"C_{name}")
             if d["lag_mode"] == "physical":
@@ -1423,7 +1423,11 @@ class EchoFit:
             y_pred = jax.vmap(echo_draw)(S, C, psi, S_band, C_band)
             basis_fine = self._background_basis(d, t=t_fine)
             if basis_fine is not None:
-                y_pred = y_pred + sample(f"bg_{name}") @ basis_fine.T
+                background = sample(f"bg_{name}") @ basis_fine.T
+                y_pred = y_pred + background
+                # The non-reverberating part, offset plus background, drawn in
+                # place of the flat offset line.
+                baseline_samples[name] = np.asarray(C_band[:, None] + background)
             y_pred_samples[name] = np.asarray(y_pred)
             psi_samples[name] = np.asarray(psi)
 
@@ -1470,6 +1474,6 @@ class EchoFit:
             np.asarray(self.tau_grid), psi_samples,
             driver_samples=np.asarray(driver_samples), driver_points=driver_points,
             driver_sigma_eff=driver_sigma_eff, sigma_eff_by_band=sigma_eff_by_band or None,
-            c_band_samples=c_band_samples,
+            c_band_samples=c_band_samples, baseline_samples=baseline_samples or None,
             **kwargs,
         )

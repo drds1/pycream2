@@ -216,7 +216,11 @@ def test_optimise_recovers_injected_diffuse_continuum_and_backgrounds():
         assert abs(np.mean(s[f"dce_width_{n}"]) - width) < 0.1
     for n, coeffs in truth_bg.items():
         np.testing.assert_allclose(np.mean(s[f"bg_{n}"], axis=0), coeffs, atol=0.05)
+    # The plot draws each background band's offset + background curve (not a
+    # flat offset line), labelled, in its light-curve panel.
     fig, _ = ef.plot_lightcurve_fits()
+    labels = [line.get_label() for ax in fig.axes for line in ax.get_lines()]
+    assert labels.count("offset + background") == len(truth_bg)
     import matplotlib.pyplot as plt
 
     plt.close(fig)

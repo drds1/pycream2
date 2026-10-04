@@ -256,6 +256,7 @@ def plot_lightcurve_fits(
     driver_sigma_eff: Optional[np.ndarray] = None,
     sigma_eff_by_band: Optional[Dict[str, np.ndarray]] = None,
     c_band_samples: Optional[Dict[str, np.ndarray]] = None,
+    baseline_samples: Optional[Dict[str, np.ndarray]] = None,
     figsize_per_row=(10, 2.2),
     driver_row_height=1.8,
 ):
@@ -308,6 +309,12 @@ def plot_lightcurve_fits(
         panel, in the same wavelength-appropriate colour as that band's own
         fit, so the offset the model is anchoring the echo to is visible
         alongside it.
+    baseline_samples : dict, optional
+        ``{band_name: array of shape (n_samples, len(t_fine))}``: for a band
+        with a slow background (``background_order > 0``), posterior draws of
+        its whole non-reverberating part, offset plus background, on
+        ``t_fine``. Drawn in place of that band's flat offset line, as a
+        dashed median curve with 68%/95% credible bands.
     """
     ordered, colours = _band_colours(bands)
     n = len(ordered)
@@ -360,7 +367,13 @@ def plot_lightcurve_fits(
         ax_lc.fill_between(t_fine, lo95, hi95, color=colour, alpha=0.15, label="95% CI", zorder=1)
         ax_lc.fill_between(t_fine, lo68, hi68, color=colour, alpha=0.35, label="68% CI", zorder=2)
         c_samples = None if c_band_samples is None else c_band_samples.get(name)
-        if c_samples is not None:
+        baseline = None if baseline_samples is None else baseline_samples.get(name)
+        if baseline is not None:
+            b_lo95, b_lo68, b_med, b_hi68, b_hi95 = np.percentile(baseline, [2.5, 16, 50, 84, 97.5], axis=0)
+            ax_lc.fill_between(t_fine, b_lo95, b_hi95, color=colour, alpha=0.15, lw=0, zorder=0)
+            ax_lc.fill_between(t_fine, b_lo68, b_hi68, color=colour, alpha=0.35, lw=0, zorder=0)
+            ax_lc.plot(t_fine, b_med, color=colour, lw=1.0, ls="--", zorder=2.5, label="offset + background")
+        elif c_samples is not None:
             c_lo95, c_lo68, c_med, c_hi68, c_hi95 = np.percentile(c_samples, [2.5, 16, 50, 84, 97.5])
             ax_lc.axhspan(c_lo95, c_hi95, color=colour, alpha=0.15, zorder=0)
             ax_lc.axhspan(c_lo68, c_hi68, color=colour, alpha=0.35, zorder=0)
@@ -382,7 +395,7 @@ def plot_lightcurve_fits(
         ax_lc.plot(t_fine, med, color=colour, lw=1.5, zorder=5)
         ax_lc.set_ylabel(f"{name}\n({d['wavelength']:.0f} \u00c5)")
         ax_lc.grid(alpha=0.6)
-        if row == 0:
+        if row == 0 or baseline is not None:  # label a background wherever one is drawn
             ax_lc.legend(fontsize=8, ncol=2, loc="upper right")
 
         psis = psi_samples[name]

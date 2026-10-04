@@ -12,8 +12,9 @@ with optimise() both without and with the components switched on. It writes
 docs/images/extra_components_*.png and docs/images/extra_components_study.json.
 
 Usage (about 30 minutes on a laptop; --replot redraws the recovery figure from
-the saved results without refitting):
-    MPLBACKEND=Agg poetry run python scripts/plot_extra_components.py [--replot]
+the saved results without refitting; --example-only refits and redraws only
+the example-fit figure):
+    MPLBACKEND=Agg poetry run python scripts/plot_extra_components.py [--replot | --example-only]
 """
 
 from __future__ import annotations
@@ -193,6 +194,12 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     if "--replot" in sys.argv:  # redraw the recovery figure from the saved results only
         fig_recovery(json.loads((OUT / "extra_components_study.json").read_text())["results"])
+        return
+    if "--example-only" in sys.argv:  # refit and redraw only the example-fit figure (~1 minute)
+        data = generate_synthetic_dataset(bands=BANDS, M_BH=M_BH, log_mdot_true=LOG_MDOT, inclination_true=INCLINATION,
+                                          n_obs_per_band=120, t_span=250.0, noise_level=0.03, seed=SEEDS[0],
+                                          diffuse_continuum=DCE, background=BACKGROUND)
+        fig_example((data, fit(data, extras=True)[1]))
         return
     fig_responses()
     fig_background(generate_synthetic_dataset(bands=BANDS, M_BH=M_BH, log_mdot_true=LOG_MDOT,

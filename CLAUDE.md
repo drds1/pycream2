@@ -219,8 +219,8 @@ match; `pycream2.__version__` reads the installed metadata);
    statement and the Fortran's actual default, `rinsch=1.0`, not the
    commented-out `=3.0` that would give a different value), i.e. exactly
    the regime this function spends the most time in. `include_irradiation`
-   still defaults to `False` (pure viscous), so this only affects opt-in
-   use.
+   defaulted to `False` (pure viscous) until October 2026, when it became
+   `True` (decision #25).
 
    Two adaptation choices still worth knowing:
    - It reuses `lag_scaling(log_mdot, wavelength, M_BH)` for its absolute
@@ -1024,7 +1024,7 @@ match; `pycream2.__version__` reads the installed metadata);
     - **Two distance estimators, and why the default is not the classic one.** The flux-flux decomposition
       (C + S X(t), zero point where the host band's model flux vanishes) assumes the variable SED has the mean
       disc's shape. The lamppost response is bluer than the disc, so flux-flux leaves disc light in the redder
-      bands' "host" and biases H_0 low: measured on `synthetic.with_disc_fluxes` data, 63.1 against a true 70
+      bands' "host" and biases H_0 low: measured on `synthetic.with_disc_fluxes` data, 64.7 against a true 70 (63.1 before decision #25's irradiated profile)
       (the host-band estimator gives 68.9). The default `distance_method="host_band"` uses only the method's
       own assumption (the bluest band has no host): its whole mean flux is disc, so it alone gives D_L, and
       every other band's host is mean minus model disc (warned if negative). `"flux_flux"` stays available,
@@ -1037,6 +1037,30 @@ match; `pycream2.__version__` reads the installed metadata);
     - **An implausible H_0 is a diagnostic, not just a bad number:** on a real campaign with a strong
       months-long trend, disc fits without `background_order` absorbed the trend into long responses
       (inclination at the prior edge, T_1 ~9x too hot) and gave H_0 ~ 6. Fit the background first.
+
+25. **Lamppost irradiation is on by default in `thin_disk_response` (`include_irradiation=True`,
+    `irradiation_weight=0.5`), October 2026, a direct request after the user saw the viscous-only responses
+    in the Fairall 9 master figure and said the spike "just looks like a bug".** The viscous-only response peaks
+    at the disk's inner edge in every band: the zero-torque factor makes the innermost disk cool, and the
+    response weighting (Planck derivative times `T**-3`, times the `h_x/d**3` dilution) makes cool gas next to
+    the lamppost respond strongly. For Fairall 9 (`M_BH = 2.55e8`) that is a sharp spike at ~0.25 d in every
+    band. Checked against CREAM's `tfbx` (compiled by `scripts/compare_cream_response.py`): it has no spike,
+    because the zero-torque factor is commented out of the temperature its response weighting uses.
+    Irradiation (`T**4 = w T_irr**4 + (1 - w) T_visc**4`, `T_irr**4 ~ (x_ref/d)**3` normalised at each band's
+    Wien radius) keeps the inner disk hot instead: Fairall 9 face-on peaks move to 0.54 d (W2) and 2.2 d (V),
+    against CREAM's 0.70 and 2.4 d at the same `T_1`. The steep near-side spike at high inclination (e.g. 80
+    degrees in `docs/images/thin_disk_response_inclination_sweep.png`) is a genuine geometric caustic, also in
+    CREAM, not this artefact.
+    - `disc_sed.py` uses the same mixed profile (`include_irradiation`/`irradiation_weight` on
+      `disc_fnu_at_1cm`, `response_sed_shape`, `disc_sed_analysis`, also via `sed_options`), so the SED
+      analysis matches the response a fit used; set `include_irradiation=False` in `sed_options` for a
+      viscous-only fit. The irradiated disk is a few per cent brighter.
+    - `tests/test_thin_disk_response.py::test_default_response_has_no_inner_edge_spike` pins the behaviour;
+      the lamppost-delay causality test is parametrised over both settings (with irradiation the response's
+      sigmoid tail reaches towards the ISCO, not the viscous temperature peak).
+    - Earlier results used the viscous-only response. `scripts/compare_cream_response.py` and the NGC 5548
+      paper scripts (`experiments/`, untracked) pin `include_irradiation=False` so their documented numbers
+      stay reproducible.
 
 ## Known rough edges / things to check before trusting results on real data
 

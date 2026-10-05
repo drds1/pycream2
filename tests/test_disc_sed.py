@@ -41,6 +41,20 @@ def test_h0_round_trip_and_low_redshift_limit():
     assert h0 == pytest.approx(2.99792458e5 * 0.05 / dl * (1 + 0.775 * 0.05), rel=2e-3)
 
 
+
+def test_irradiated_profile_is_a_few_per_cent_brighter_than_viscous():
+    """The default profile mixes in lamppost irradiation as thin_disk_response
+    does; it keeps the inner disc warm, so the disc is slightly brighter, and
+    include_irradiation=False gives the viscous profile alone."""
+    lam = np.array([2000.0, 5000.0])
+    t1 = float(disk_t1_kelvin(LOG_MDOT, M_BH))
+    irr = disc_sed.disc_fnu_at_1cm(lam, 0.0, t1, 0.75, 0.0, M_BH)
+    visc = disc_sed.disc_fnu_at_1cm(lam, 0.0, t1, 0.75, 0.0, M_BH, include_irradiation=False)
+    assert np.all(irr > visc) and np.all(irr < 1.2 * visc)
+    pure = disc_sed.disc_fnu_at_1cm(lam, 0.0, t1, 0.75, 0.0, M_BH, irradiation_weight=0.0)
+    assert np.allclose(pure, visc, rtol=1e-12)
+
+
 def test_standard_disc_spectra_have_the_textbook_slopes():
     lam = np.array([2500.0, 3500.0, 5000.0])
     t1 = 3e5  # hot enough for the nu^(1/3) regime to reach 2500 A

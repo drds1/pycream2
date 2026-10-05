@@ -831,6 +831,9 @@ on `tau_grid`. Two are built in:
   light-travel-time delay surface, weighted by the Planck-function
   temperature derivative -- giving inclination-driven skew and a hard
   causal edge from the geometry itself, rather than an assumed shape.
+  Irradiation is on by default (`include_irradiation=True`): a purely
+  viscous disk's cool inner edge gives every band a sharp response spike
+  at the same short delay, which CREAM's responses don't have.
   Unlike the closed-form skew-normal, this is a genuine disk integral, but
   an **exact analytic one**: the two radius/azimuth integral reduces, via a
   delta-function argument, to a single 1-D integral over azimuth (no

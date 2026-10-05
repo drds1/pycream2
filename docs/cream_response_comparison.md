@@ -166,6 +166,11 @@ differ in two ways that affect the innermost disc, where these lags come from:
     $T^{-3}$.
   - This is the most likely cause of the faster rise. We have not isolated it
     by switching the factor off.
+  - Since October 2026 pycream2's default response mixes in lamppost
+    irradiation (`include_irradiation=True`), which keeps the inner disc hot
+    and removes this inner-edge response. The comparison on this page uses the
+    viscous-only response (`include_irradiation=False`), as CREAM is run here
+    with no irradiation temperature.
 - **The dilution.**
   - pycream2 uses the exact lamppost geometry, $h/d^3$ with
     $d=\sqrt{r^2+h^2}$.
@@ -246,7 +251,9 @@ lamppost-irradiated thin disc's response sits at its inner edge at every
 wavelength, where the zero-torque cooling and the $h/d^3$ dilution make the
 innermost ring respond most strongly. It is the mean and median delays, not
 the peak, that grow with wavelength. The old smoothing only moved the peak
-outwards.
+outwards. This applies to the viscous-only response: with irradiation, the
+default since October 2026, the peak moves outwards with wavelength too (see
+[Thin-disk response function](thin_disk_response.md)).
 
 Every thin-disc fit made before these changes, including the NGC 5548
 analysis, used the old default and needs redoing.

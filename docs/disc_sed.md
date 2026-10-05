@@ -55,6 +55,8 @@ From the command line, `scripts/fit_lightcurves.py --sed-analysis --redshift 0.0
 | `fit_intrinsic_ebv` | `False` | fit an intrinsic $E(B-V)$ with $D_L$ (needs `"flux_flux"`) |
 | `omega_m` | 0.3 | flat ΛCDM, for converting $D_L$ to $H_0$ |
 | `lamppost_height_rs` | 3 | the lamppost height for the predicted variable SED |
+| `include_irradiation` | `True` | mix lamppost irradiation into $T(r)$, as `thin_disk_response` does by default; set `False` for a fit made with the viscous-only response |
+| `irradiation_weight` | 0.5 | irradiation's share of $T^4$ at each band's Wien radius |
 | `n_draws` | 300 | posterior draws used |
 
 **Requirements:** absolute fluxes (not normalised or mean-subtracted light curves; the analysis
@@ -72,7 +74,12 @@ The fitted `log_mdot` and the black hole mass give $T_1$, the temperature at 1 l
 T(r) = T_1\, r^{-\alpha} \left(1 - \sqrt{r_{\rm in}/r}\right)^{1/4},
 ```
 
-with $\alpha = 3/4$, or the fitted `temperature_slope`. Seen at inclination $i$ from luminosity
+with $\alpha = 3/4$, or the fitted `temperature_slope`. By default (`include_irradiation=True`) the
+analysis uses the same profile as the response function, with lamppost irradiation mixed in:
+$T^4 = w\,T_{\rm irr}^4 + (1-w)\,T^4_{\rm visc}$, the viscous $T^4_{\rm visc}$ being the
+expression above and $T_{\rm irr}^4 \propto (r^2+h^2)^{-3/2}$ scaled so that its share of $T^4$ is
+$w$ at each wavelength's Wien radius (see [Thin-disk response function](thin_disk_response.md)).
+This makes the disc a few per cent brighter than the viscous profile alone. Seen at inclination $i$ from luminosity
 distance $D_L$, its flux density at observed frequency $\nu$ is
 
 ```math
@@ -138,11 +145,11 @@ It fits them with `optimise()` and `sed_analysis=True`:
 
 | | truth | host-band estimator | flux-flux estimator |
 |---|---|---|---|
-| $D_L$ (Mpc) | 131.4 | 133.6 (+4.0/−4.7) | |
-| $H_0$ (km s⁻¹ Mpc⁻¹) | 70.0 | 68.9 (+2.5/−2.0) | 63.1 (+2.3/−1.8) |
-| host flux, g / r / i / z (mJy) | 1.00 / 2.00 / 3.00 / 3.50 | 1.00 / 2.00 / 3.01 / 3.51 | 1.34 / 2.56 / 3.66 / 4.23 |
+| $D_L$ (Mpc) | 131.4 | 133.5 (+4.1/−4.7) | |
+| $H_0$ (km s⁻¹ Mpc⁻¹) | 70.0 | 68.9 (+2.5/−2.0) | 64.7 (+2.3/−1.9) |
+| host flux, g / r / i / z (mJy) | 1.00 / 2.00 / 3.00 / 3.50 | 1.00 / 2.00 / 3.00 / 3.51 | 1.27 / 2.44 / 3.52 / 4.06 |
 
-The host-band estimator recovers everything. The flux-flux estimator is biased by 10% in $H_0$, by
+The host-band estimator recovers everything. The flux-flux estimator is biased by 8% in $H_0$, by
 the effect described above; with `variable_sed="mean"` in `with_disc_fluxes` (variability exactly
 proportional to the mean disc) it is unbiased too.
 

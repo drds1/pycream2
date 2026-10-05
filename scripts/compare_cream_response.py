@@ -91,6 +91,10 @@ def cream_psi(exe: Path, ntau: int, inclination: float) -> tuple[np.ndarray, np.
 
 
 def pycream_psi(tau: np.ndarray, inclination: float, log_mdot: float, **kwargs) -> np.ndarray:
+    # Viscous-only, as CREAM is run here (irradiation temperature 0): the
+    # comparison of docs/cream_response_comparison.md predates irradiation
+    # becoming pycream2's default (October 2026).
+    kwargs.setdefault("include_irradiation", False)
     return np.asarray(thin_disk_response(jnp.asarray(tau), log_mdot, WAVELENGTH, inclination, M_BH, **kwargs))
 
 

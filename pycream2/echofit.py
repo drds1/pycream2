@@ -187,7 +187,9 @@ class EchoFit:
     sed_options : dict, optional
         Further keyword arguments for
         :func:`pycream2.disc_sed.disc_sed_analysis` (``fit_intrinsic_ebv``,
-        ``omega_m``, ``host_band``, ``lamppost_height_rs``, ``n_draws``).
+        ``omega_m``, ``host_band``, ``lamppost_height_rs``, ``n_draws``,
+        ``include_irradiation``, ``irradiation_weight``; pass
+        ``include_irradiation=False`` if the fit used a viscous-only response).
 
     Examples
     --------

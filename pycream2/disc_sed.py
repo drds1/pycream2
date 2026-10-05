@@ -5,7 +5,9 @@ fitted :class:`~pycream2.echofit.EchoFit`: the test of Cackett, Horne & Winkler
 
 The delays fix the disc's temperature profile in light-days,
 ``T(r) = T_1 r^-alpha (1 - sqrt(r_in/r))^(1/4)`` (``T_1`` from ``log_mdot`` and
-``M_BH``, :func:`~pycream2.forward_model.disk_t1_kelvin`), and the fit gives its
+``M_BH``, :func:`~pycream2.forward_model.disk_t1_kelvin`), mixed with the
+lamppost's irradiation exactly as :func:`~pycream2.forward_model.thin_disk_response`
+mixes it (``include_irradiation``, on by default), and the fit gives its
 inclination. Such a disc seen from a luminosity distance ``D_L`` has
 
     f_nu(nu_obs) = (1 + z) cos(i) / D_L^2  int B_nu(nu_obs (1 + z), T(r)) 2 pi r dr,
@@ -69,7 +71,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .forward_model import disk_t1_kelvin, driver_at
+from .forward_model import _WIEN_B_ANGSTROM_KELVIN, disk_t1_kelvin, driver_at
 
 FLUX_UNITS = ("mJy", "f_lambda")
 LIGHT_DAY_CM = 2.59020684e15
@@ -118,36 +120,56 @@ def to_mjy(lam_obs_angstrom, flux_unit: str, flux_scale: float = 1.0):
     return float(flux_scale) * lam ** 2 / (_C * 1e8) * 1e26  # f_nu = f_lambda lambda^2 / c
 
 
-def _disc_grid(t1_k, alpha, m_bh, r_out_ld=1000.0, n_r=4000):
+def _disc_grid(t1_k, alpha, m_bh, lam_angstrom, lamppost_height_rs=3.0, include_irradiation=True,
+               irradiation_weight=0.5, r_out_ld=1000.0, n_r=4000):
+    """Radii (light-days), the lamppost height (light-days) and ``T(r)`` per
+    wavelength, shape ``(n_lam, n_r)``: the same profile ``thin_disk_response``
+    uses for each band. With irradiation, its share of ``T**4`` is
+    ``irradiation_weight`` at that wavelength's Wien radius, so the profile
+    differs slightly between wavelengths (as it does between bands in a fit)."""
     rs_ld = 2 * _G * m_bh * _MSUN / _C ** 2 / LIGHT_DAY_CM
     r_in = 3 * rs_ld
+    h = lamppost_height_rs * rs_ld
+    alpha = np.float64(alpha)
     r = np.logspace(np.log10(r_in * 1.0001), np.log10(r_out_ld), n_r)
-    temp = np.float64(t1_k) * r ** (-np.float64(alpha)) * (1 - np.sqrt(r_in / r)) ** 0.25
-    return r, rs_ld, temp
+
+    def visc(rr):
+        return rr ** (-4 * alpha) * (1 - np.sqrt(r_in / rr))
+
+    t4 = np.broadcast_to(visc(r), (len(lam_angstrom), n_r))
+    if include_irradiation:
+        r_w = (np.float64(t1_k) * np.asarray(lam_angstrom, dtype=float) / _WIEN_B_ANGSTROM_KELVIN) ** (1 / alpha)
+        r_w = np.clip(r_w, r_in * 1.0001, None)[:, None]
+        t4_irad = ((r_w ** 2 + h ** 2) / (r ** 2 + h ** 2)) ** 1.5 * visc(r_w)
+        t4 = irradiation_weight * t4_irad + (1 - irradiation_weight) * t4
+    return r, h, np.float64(t1_k) * t4 ** 0.25
 
 
-def disc_fnu_at_1cm(lam_rest_angstrom, redshift, t1_k, alpha, incl_deg, m_bh):
+def disc_fnu_at_1cm(lam_rest_angstrom, redshift, t1_k, alpha, incl_deg, m_bh, lamppost_height_rs=3.0,
+                    include_irradiation=True, irradiation_weight=0.5):
     """Observed flux density (mJy) of the model disc at ``D_L = 1 cm``:
     ``(1 + z) cos(i) int B_nu(nu_rest, T(r)) 2 pi r dr``, per wavelength."""
-    r, _, temp = _disc_grid(t1_k, alpha, m_bh)
-    nu = _C / (np.asarray(lam_rest_angstrom, dtype=float)[:, None] * 1e-8)
-    x = np.clip(_H * nu / (_K * temp[None, :]), 1e-6, 700)
+    lam = np.asarray(lam_rest_angstrom, dtype=float)
+    r, _, temp = _disc_grid(t1_k, alpha, m_bh, lam, lamppost_height_rs, include_irradiation, irradiation_weight)
+    nu = _C / (lam[:, None] * 1e-8)
+    x = np.clip(_H * nu / (_K * temp), 1e-6, 700)
     bnu = 2 * _H * nu ** 3 / _C ** 2 / np.expm1(x)
     r_cm = r * LIGHT_DAY_CM
     integral = _trapezoid(bnu * 2 * np.pi * r_cm[None, :], r_cm, axis=1)
     return (1 + redshift) * np.cos(np.deg2rad(np.float64(incl_deg))) * integral * 1e26
 
 
-def response_sed_shape(lam_rest_angstrom, t1_k, alpha, m_bh, lamppost_height_rs=3.0):
+def response_sed_shape(lam_rest_angstrom, t1_k, alpha, m_bh, lamppost_height_rs=3.0,
+                       include_irradiation=True, irradiation_weight=0.5):
     """Spectrum of the disc's response to the lamppost, ``int dB_nu/dT T^-3
     h/x^3 2 pi r dr`` (arbitrary units), per wavelength: the variable SED's
     predicted shape for the fitted temperature profile."""
-    r, rs_ld, temp = _disc_grid(t1_k, alpha, m_bh)
-    h = lamppost_height_rs * rs_ld
-    nu = _C / (np.asarray(lam_rest_angstrom, dtype=float)[:, None] * 1e-8)
-    x = np.clip(_H * nu / (_K * temp[None, :]), 1e-6, 700)
-    db_dt = 2 * _H * nu ** 3 / _C ** 2 * x / temp[None, :] * np.exp(-x) / (-np.expm1(-x)) ** 2
-    weight = temp[None, :] ** -3 * h / (r ** 2 + h ** 2) ** 1.5
+    lam = np.asarray(lam_rest_angstrom, dtype=float)
+    r, h, temp = _disc_grid(t1_k, alpha, m_bh, lam, lamppost_height_rs, include_irradiation, irradiation_weight)
+    nu = _C / (lam[:, None] * 1e-8)
+    x = np.clip(_H * nu / (_K * temp), 1e-6, 700)
+    db_dt = 2 * _H * nu ** 3 / _C ** 2 * x / temp * np.exp(-x) / (-np.expm1(-x)) ** 2
+    weight = temp ** -3 * h / (r ** 2 + h ** 2) ** 1.5
     return _trapezoid(db_dt * weight * 2 * np.pi * r[None, :], r, axis=1)
 
 
@@ -167,6 +189,7 @@ def disc_sed_analysis(
     ef, redshift: float, flux_unit: str = "mJy", flux_scale: float = 1.0, ebv_galactic: float = 0.0,
     fit_intrinsic_ebv: bool = False, omega_m: float = 0.3, host_band: Optional[str] = None,
     lamppost_height_rs: float = 3.0, n_draws: int = 300, seed: int = 0, distance_method: str = "host_band",
+    include_irradiation: bool = True, irradiation_weight: float = 0.5,
 ) -> Dict:
     """Run the analysis described in the module docstring on a fitted ``ef``.
 
@@ -175,6 +198,10 @@ def disc_sed_analysis(
     ``alpha``, the inclination, and per band the variable, disc, total and
     constant fluxes (mJy, dereddened) and the per-band distance) and
     ``"draws"`` (per-draw arrays, for :func:`pycream2.plotting.plot_disc_sed`).
+
+    ``include_irradiation``/``irradiation_weight``/``lamppost_height_rs`` set
+    the disc's temperature profile, and should match the response function the
+    fit used (the defaults match :func:`~pycream2.forward_model.thin_disk_response`'s).
     """
     if distance_method not in ("host_band", "flux_flux"):
         raise ValueError(f"distance_method must be 'host_band' or 'flux_flux', got {distance_method!r}")
@@ -222,9 +249,11 @@ def disc_sed_analysis(
     alpha = (np.asarray(s["temperature_slope"])[idx] if "temperature_slope" in s
              else np.full(len(idx), 0.75))
     incl = np.asarray(s["inclination"])[idx] if "inclination" in s else np.full(len(idx), 0.0)
-    unit = np.array([disc_fnu_at_1cm(lam_rest, redshift, a, b, c, ef.M_BH)
+    profile = dict(lamppost_height_rs=lamppost_height_rs, include_irradiation=include_irradiation,
+                   irradiation_weight=irradiation_weight)
+    unit = np.array([disc_fnu_at_1cm(lam_rest, redshift, a, b, c, ef.M_BH, **profile)
                      for a, b, c in zip(t1, alpha, incl)]).T  # (band, draw), mJy at 1 cm
-    shape = np.array([response_sed_shape(lam_rest, a, b, ef.M_BH, lamppost_height_rs)
+    shape = np.array([response_sed_shape(lam_rest, a, b, ef.M_BH, **profile)
                       for a, b in zip(t1, alpha)]).T
     k_int = ccm_a_lambda(lam_rest, 1.0) / 1.0  # A_lambda per unit intrinsic E(B-V), at rest wavelength
 

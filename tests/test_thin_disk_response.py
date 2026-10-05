@@ -287,19 +287,25 @@ def test_thin_disk_response_starts_at_zero_and_smoothing_is_causal():
         assert psi[tau_np > 0.0][0] < 1e-3 * psi.max()
 
 
-def test_thin_disk_response_no_light_before_the_lamppost_delay():
+@pytest.mark.parametrize("include_irradiation", [False, True])
+def test_thin_disk_response_no_light_before_the_lamppost_delay(include_irradiation):
     """With the lamppost height in the delay, nothing can respond before the
-    shortest lamppost-disc-observer path: face-on that is sqrt(r_pk**2 +
-    h_x**2) + h_x, at the temperature peak just outside the ISCO."""
+    shortest lamppost-disc-observer path: face-on that is sqrt(r**2 + h_x**2)
+    + h_x at the response's inner edge. Viscous-only, that edge is the
+    temperature peak just outside the ISCO (r_pk); with irradiation, which
+    keeps the inner disk warm, the sigmoid mask still starts at r_pk but its
+    tail reaches in towards the ISCO itself, so the bound is the ISCO's delay."""
     from pycream2.forward_model import _schwarzschild_radius_light_days
     M = 10 ** 7.5
     rs = _schwarzschild_radius_light_days(M)
-    hx, r_pk = 3.0 * rs, 3.0 * rs * (3.5 / 3.0) ** 2
-    earliest = np.sqrt(r_pk ** 2 + hx ** 2) + hx
+    hx = 3.0 * rs
+    r_edge = 3.0 * rs * ((3.5 / 3.0) ** 2 if not include_irradiation else 1.0)
+    earliest = np.sqrt(r_edge ** 2 + hx ** 2) + hx
     tau_grid = jnp.linspace(0.0, 2.0, 20001)
     tau_np = np.asarray(tau_grid)
-    psi = np.asarray(thin_disk_response(tau_grid, 3.0, 5000.0, 0.0, M, smoothing_log=0.0))
-    # The inner-edge sigmoid is 0.05 r_in wide, so allow a sliver below r_pk.
+    psi = np.asarray(thin_disk_response(tau_grid, 3.0, 5000.0, 0.0, M, smoothing_log=0.0,
+                                        include_irradiation=include_irradiation))
+    # The inner-edge sigmoid is 0.05 r_in wide, so allow a sliver below the edge.
     assert np.all(psi[tau_np < 0.9 * earliest] < 1e-6 * psi.max())
     assert psi[tau_np > 1.5 * earliest].max() > 0.0
 
@@ -313,3 +319,24 @@ def test_log_smoothing_keeps_the_mean_delay():
     smooth = np.asarray(thin_disk_response(tau_grid, 3.0, 5000.0, 30.0, 10 ** 7.5))
     mean = lambda psi: _np_trapz(psi * tau_np, tau_np) / _np_trapz(psi, tau_np)  # noqa: E731
     assert abs(mean(smooth) / mean(exact) - 1.0) < 0.01
+
+
+@pytest.mark.parametrize("wavelength", [2055.0, 5425.0])
+def test_default_response_has_no_inner_edge_spike(wavelength):
+    """The viscous-only response peaks at the disk's inner edge in every band
+    (the zero-torque factor makes the inner disk cool, and the T**-3 weighting
+    makes cool gas respond strongly), a sharp spike at a fixed ~0.25-day delay
+    for Fairall 9's parameters that CREAM's responses don't have. The default,
+    irradiated response peaks well outside it, later at longer wavelengths."""
+    from pycream2.forward_model import _schwarzschild_radius_light_days
+    M = 2.55e8
+    rs = _schwarzschild_radius_light_days(M)
+    hx, r_pk = 3.0 * rs, 3.0 * rs * (3.5 / 3.0) ** 2
+    edge = np.sqrt(r_pk ** 2 + hx ** 2) + hx
+    tau_grid = jnp.linspace(0.0, 10.0, 4001)
+    tau_np = np.asarray(tau_grid)
+    peak = tau_np[np.argmax(np.asarray(thin_disk_response(tau_grid, 2.44, wavelength, 0.0, M)))]
+    peak_viscous = tau_np[np.argmax(np.asarray(
+        thin_disk_response(tau_grid, 2.44, wavelength, 0.0, M, include_irradiation=False)))]
+    assert peak_viscous < 1.3 * edge
+    assert peak > 2.0 * edge

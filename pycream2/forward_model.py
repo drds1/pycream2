@@ -398,7 +398,7 @@ def thin_disk_response(
     inclination,
     M_BH,
     viscous_slope: float = 0.75,
-    include_irradiation: bool = False,
+    include_irradiation: bool = True,
     irradiation_slope: float = 0.75,
     irradiation_weight: float = 0.5,
     lamppost_height_rs: float = 3.0,
@@ -541,9 +541,17 @@ def thin_disk_response(
         (``EchoFit(fit_temperature_slope=True)``); delays then scale as
         ``wavelength**(1/alpha)``.
     include_irradiation : bool
-        If True, mix in the lamppost-irradiation temperature component
+        If True (the default since October 2026), mix in the
+        lamppost-irradiation temperature component
         (``irradiation_slope``/``lamppost_height_rs``, weighted by
         ``irradiation_weight``) instead of a single-component viscous disk.
+        The viscous-only response (``False``) has a sharp spike near zero
+        delay: the zero-torque factor ``(1 - sqrt(r_in/r))**(1/4)`` makes the
+        inner disk cool, and the ``T**-3`` response weighting then makes it
+        respond strongly, right next to the lamppost. Irradiation keeps the
+        inner disk hot, removes the spike and gives responses like CREAM's
+        (whose ``tfbx`` omits the zero-torque factor from the response
+        weighting); see CLAUDE.md decision #25.
     irradiation_slope : float
         Only used if ``include_irradiation``; the irradiation term's own
         power-law index far from the lamppost (where ``T_irr**4 ~

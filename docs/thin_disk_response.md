@@ -81,7 +81,8 @@ temperature smoothly to zero at `r_in`:
 T_visc**4(r) = K_visc * (1 - sqrt(r_in / r)) / r**3
 ```
 
-**Lamppost irradiation** (optional, `include_irradiation=True`): the *true*
+**Lamppost irradiation** (`include_irradiation=True`, the default since
+October 2026; see below): the *true*
 lamppost geometry above, not a `~1/r**3` far-field approximation used in
 an earlier draft of this function -- the two forms only agree for `r >>
 h_x`, and `h_x` defaults to 3 Schwarzschild radii, the same order of
@@ -96,7 +97,27 @@ T_irr**4(r) = K_irr * h_x / (r**2 + h_x**2)**1.5
 value) is expressed in Schwarzschild radii and converted to light-days via
 the same `M_BH`-based helper as `r_in`. The two terms are combined as
 `T**4(r) = w * T_irr**4(r) + (1-w) * T_visc**4(r)` for a mixing weight `w`
-(`irradiation_weight`), or just the viscous term alone by default.
+(`irradiation_weight`, default 0.5: irradiation's share of `T**4` at each
+band's Wien radius), or the viscous term alone with
+`include_irradiation=False`.
+
+**Why irradiation is on by default.** With the viscous term alone, the
+zero-torque factor `(1 - sqrt(r_in/r))` makes the innermost disk cool, and
+the response weighting (the Planck derivative times `T**-3`, times the
+lamppost's `h_x/d**3` dilution) makes cool gas next to the lamppost
+respond strongly. The response then peaks at the disk's inner edge in every
+band: a sharp spike at a fixed, wavelength-independent delay (about 0.25
+days for Fairall 9's `M_BH = 2.55e8`), which no published response function
+shows. CREAM's `tfbx` avoids it by leaving the zero-torque factor out of the
+temperature it uses for the response weighting. Irradiation keeps the
+inner disk hot instead, so the spike goes and the peak moves out with
+wavelength (Fairall 9, face-on: 0.54 days at 2055 A and 2.2 days at 5425 A
+with `w = 0.5`, against CREAM's 0.70 and 2.4 days at the same `T_1`). The
+mean and median delays, which carry the lag-spectrum information, change
+much less than the peak. `tests/test_thin_disk_response.py`'s
+`test_default_response_has_no_inner_edge_spike` checks this. Fits made
+before the change used the viscous-only response; pass
+`include_irradiation=False` to reproduce them.
 
 Both `K_visc` and `K_irr`'s radial *power-law index* (`viscous_slope`,
 `irradiation_slope`, default 0.75 each, the standard thin-disk value, and

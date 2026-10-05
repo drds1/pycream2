@@ -14,6 +14,20 @@ Generated from the docstrings in the source code.
 
 ::: pycream2.synthetic.with_disc_fluxes
 
+## Rimmed and rippled discs
+
+::: pycream2.rippled_disc
+
+::: pycream2.rippled_disc.rippled_disc_response
+
+::: pycream2.rippled_disc.disc_surface
+
+::: pycream2.rippled_disc.response_elements
+
+::: pycream2.rippled_disc.rippled_disc_fnu
+
+::: pycream2.rippled_disc.disc_height
+
 ## Response functions
 
 ::: pycream2.forward_model.lag_scaling

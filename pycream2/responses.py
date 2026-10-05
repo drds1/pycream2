@@ -49,6 +49,7 @@ from __future__ import annotations
 from typing import Callable, Dict, Protocol
 
 from .forward_model import response_function, thin_disk_response
+from .rippled_disc import rippled_disc_response
 
 
 class ResponseFunction(Protocol):
@@ -61,6 +62,9 @@ class ResponseFunction(Protocol):
 _REGISTRY: Dict[str, Callable] = {
     "skew_normal": response_function,
     "thin_disk": thin_disk_response,
+    # Rimmed and rippled discs (Starkey, Huang, Horne & Lin 2023); flat by default,
+    # the geometry set with functools.partial (see pycream2.rippled_disc).
+    "rippled_disc": rippled_disc_response,
 }
 
 

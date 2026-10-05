@@ -282,6 +282,9 @@ pycream2/
     disc_sed.py          disc_sed_analysis: flux-flux host/disc decomposition, dust
                           correction, variable SED vs the disc's response, luminosity
                           distance and H0 (EchoFit(sed_analysis=True))
+    rippled_disc.py      rimmed and rippled discs (Starkey et al. 2023): disc_height,
+                          disc_surface (shadows, temperature), rippled_disc_response,
+                          rippled_disc_fnu
     plotting.py          plot_raw_lightcurves, plot_lightcurve_fits, plot_power_spectrum,
                           plot_mcmc_diagnostics, plot_corner, plot_fourier_correlation
     reporting.py          generate_report: shared plots + report.html generation,
@@ -966,6 +969,33 @@ From the command line: `scripts/fit_lightcurves.py --sed-analysis
 --redshift 0.047 --ebv-galactic 0.022`. An implausible H₀ is a warning in
 itself: slow variability left out of the model makes the disc look larger and
 further away (fit a slow background with `background_order`).
+
+## 🏔️ Rimmed and rippled discs
+
+`pycream2.rippled_disc` implements the rimmed and rippled discs of Starkey,
+Huang, Horne & Lin (2023, MNRAS 519, 2754): a disc with a thickness profile
+H(r) whose surfaces tilted towards the lamppost intercept more of its light,
+so they are hotter and respond more strongly than a flat disc at the same
+radius. A steep rim at ~5 light-days (near the dust sublimation radius) heats
+from ~1500 K to ~6000 K and lengthens NGC 5548's optical delays to what is
+observed. Ripple crests do the same, with shadows behind them.
+
+![A flash from the lamppost sweeping across a flat and a rimmed disc](docs/images/rippled_disc_animation.gif)
+
+It is a response function with the usual contract, so it drops into any fit,
+with the disc's geometry fixed:
+
+```python
+import functools
+import pycream2.model as model
+from pycream2.rippled_disc import rippled_disc_response, NGC5548_RIM
+model.response_function = functools.partial(rippled_disc_response, **NGC5548_RIM)
+```
+
+Synthetic light curves made with the rim, fitted with a flat thin disc, give
+a disc that is too hot and a temperature slope steeper than 3/4: the
+signatures of the disc-size problem. Method, validation and that experiment:
+[`docs/rippled_disc.md`](docs/rippled_disc.md).
 
 ## 🌈 Emission-line / free-lag mode and driver light curves
 

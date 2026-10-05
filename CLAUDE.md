@@ -1062,6 +1062,38 @@ match; `pycream2.__version__` reads the installed metadata);
       paper scripts (`experiments/`, untracked) pin `include_irradiation=False` so their documented numbers
       stay reproducible.
 
+26. **Rimmed and rippled discs (`pycream2/rippled_disc.py`; Starkey, Huang, Horne & Lin 2023, MNRAS 519,
+    2754; October 2026, a direct request, with tests on synthetic data, docs `docs/rippled_disc.md`, figures
+    from `scripts/plot_rippled_disc.py` and the two animations, rim and ripples, from
+    `scripts/animate_rippled_disc.py [--model ripples]`, both a direct request).** The paper's
+    model checked against its own equations (eqs. 3, 11, 12, 15, 16, 22): a thickness profile `H(r)` (power
+    law, steep rim, ripples), lamppost irradiation through the covering factor `f = (r H' - H + H_LP)/r`,
+    the delay with the surface's height, and shadowing. Design choices worth knowing:
+    - **A 2-D (radius, azimuth) quadrature, not the 1-D reduction** of `thin_disk_response`: with `H(r)` the
+      delay is no longer quadratic in `r`. Each element is deposited on the lag grid with linear weights and
+      smoothed in ln tau, so it stays differentiable in `log_mdot` and `inclination`. **The geometry is fixed
+      (Python floats), not sampled**: it sets the radial grid (refined across a rim, whose face is
+      `~r_ref/beta` wide, and per ripple) and the shadows, both computed in numpy outside the gradient, so
+      the hard shadow mask is not decision #7's gradient trap (nothing sampled moves it). Sampling the
+      geometry would need model sites and a differentiable shadow; not done.
+    - **Validated against `thin_disk_response`**: a flat disc without irradiation heating matches its viscous
+      response to <1% in mean and median delay (an independent check of the exact 1-D reduction too). That
+      needed the same inner edge, the viscous temperature peak (decision #22), and the exact lamppost
+      geometry.
+    - **`exact_irradiation=True` (default) departs from the paper's eq. 3**, which uses `f/r**2`: the
+      small-angle form per unit disc *plane* area. The default uses `cos(incidence)/d**2` per unit
+      *surface* area, `r f / (d**3 sqrt(1 + H'**2))`. They agree for gentle slopes far from the lamppost;
+      on the NGC 5548 rim face (H' ~ 3) the paper's form gives ~3x the flux (rim up to 12,000 K vs 9,000 K
+      at eps_LP = 1), and it diverges for a vertical wall. `exact_irradiation=False` reproduces eq. 3
+      exactly (tested).
+    - **A near-vertical rim's own mean delay** is `r_out (1 + (pi/4) sin i) + (H_LP - <H>) cos i` with
+      projected-area weighting (tested); the paper's eq. 21 has 2/3 in place of pi/4.
+    - Observer-side occultation (a rim hiding the inner disc at high inclination) is not modelled; the
+      surfaces' projection towards the observer, `cos i - H' sin i cos phi`, is.
+    - `NGC5548_RIM` (H/r = 0.03 at r_out = 5 ld, beta = 100) and `EXAMPLE_RIPPLES` are presets;
+      `lamppost_efficiency = 0.2` is illustrative (rim face ~6000 K for a viscous disc at 1500 K at 5 ld).
+    - `synthetic.generate_synthetic_dataset(response=...)` takes any response function for the truth.
+
 ## Known rough edges / things to check before trusting results on real data
 
 - `synthetic.py`'s ground truth is generated with the *same* forward model

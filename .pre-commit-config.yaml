@@ -11,7 +11,7 @@ repos:
         args: ["--maxkb=1000"]
         # Intentional, regenerated-on-purpose binary assets (see README's
         # "Visual smoke test"/the animation section) -- not accidents.
-        exclude: ^(docs/images/fit_animation\.gif|smoke_test_output/.*)$
+        exclude: ^(docs/images/(fit_animation|rippled_disc_animation|rippled_disc_ripples_animation)\.gif|smoke_test_output/.*)$
 
 # Deliberately no test-running hook here -- measured directly, not assumed:
 # even `pytest -m "not slow"` (skipping the handful of genuinely slow

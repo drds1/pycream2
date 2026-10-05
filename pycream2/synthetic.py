@@ -83,6 +83,7 @@ def generate_synthetic_dataset(
     seed: int = 0,
     diffuse_continuum: Optional[Dict[str, Tuple[float, float, float]]] = None,
     background: Optional[Dict[str, Sequence[float]]] = None,
+    response=None,
 ) -> dict:
     """Generate a synthetic multi-band reverberation-mapping dataset.
 
@@ -124,6 +125,13 @@ def generate_synthetic_dataset(
         time span, exactly the basis ``EchoFit.add_lightcurve(...,
         background_order=K)`` fits (``forward_model.legendre_background_basis``),
         so the coefficients are directly comparable with fitted ``bg_{band}``.
+    response : callable, optional
+        The ground-truth response function, with the response-function contract
+        of :mod:`pycream2.model` (``(tau_grid, log_mdot, wavelength, inclination,
+        M_BH)``, e.g. a ``functools.partial`` of
+        :func:`pycream2.forward_model.thin_disk_response` or
+        :func:`pycream2.rippled_disc.rippled_disc_response`). Default: the
+        skew-normal :func:`pycream2.forward_model.response_function`.
 
     Returns
     -------
@@ -177,7 +185,7 @@ def generate_synthetic_dataset(
         t = t_by_band[name]
 
         psi = np.asarray(
-            response_function(
+            (response or response_function)(
                 tau_grid,
                 log_mdot=log_mdot_true,
                 wavelength=wavelength,

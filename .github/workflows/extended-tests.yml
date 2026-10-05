@@ -1,0 +1,73 @@
+name: Extended tests
+
+# Manually triggered only (Actions tab -> Extended tests -> "Run workflow").
+# Complements the Tests workflow (full suite, Python 3.11) with two checks too
+# slow to run on every change: the slow, MCMC-based recovery tests on the other
+# supported Python versions, and synthetic-data injection-recovery fits
+# (scripts/smoke_test.py) over several random seeds, whose reports are uploaded
+# as artifacts. Synthetic data only: this tests pycream2 itself.
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Space-separated seeds for the synthetic recovery fits"
+        default: "2 3 4"
+        required: true
+
+jobs:
+  slow-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --extras dev
+
+      - name: Run the slow recovery tests
+        env:
+          MPLBACKEND: Agg
+        run: poetry run pytest tests/ -m slow
+
+  synthetic-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --extras dev
+
+      - name: Fit synthetic light curves for each seed
+        env:
+          MPLBACKEND: Agg
+          SEEDS: ${{ inputs.seeds }}
+        run: |
+          for seed in $SEEDS; do
+            poetry run python scripts/smoke_test.py --dataset synthetic --seed "$seed" \
+              --outdir recovery/seed_"$seed"
+          done
+
+      - name: Upload the recovery reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-recovery
+          path: recovery/

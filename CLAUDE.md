@@ -1194,6 +1194,27 @@ poetry install --with docs && poetry run mkdocs serve  # docs site preview at
                                                         # (.github/workflows/docs.yml)
 ```
 
+## Heavy computation runs on Kaggle, not the laptop
+
+The development laptop has 2 physical cores and 8 GB of memory, so long fitting jobs (real-data
+fits, synthetic injection-recovery sets, PSIS checks) run on **Kaggle Notebooks** (free, no payment
+details) by default. Keep the laptop for quick checks, the test suite, figures, and anything that
+needs library code not yet pushed: Kaggle installs pycream2 from GitHub at `origin/main`.
+
+- The tooling lives in `experiments/ngc5548_paper/kaggle/` (untracked, like the rest of `experiments/`; see its
+  README). `build.py` turns a named batch of commands into a self-contained private notebook;
+  `runs.py push <batches>`, `runs.py wait` and `runs.py usage` push it, download and merge its output
+  into the local cache, and keep a compute ledger (`usage.json`). New work: add a batch to
+  `build.py`'s `BATCHES`.
+- The Kaggle CLI is the optional Poetry group `remote` (`poetry install --with remote`).
+- Sessions are capped at 12 hours each; a run's setup costs about a minute.
+- Google Colab's free tier is the fallback (`build.py <batch> --colab`), but it isn't a background
+  runner.
+- **GitHub Actions is for testing pycream2 only** (`.github/workflows/extended-tests.yml`: slow
+  recovery tests, synthetic recovery fits). GitHub's terms forbid Actions use "unrelated to the
+  production, testing, deployment, or publication of the software project", and suspension would
+  take the repository and PyPI publishing with it. Never use paid runners or anything needing a card.
+
 ## Style notes
 
 - Keep files minimal / avoid unnecessary abstraction, per the original spec.

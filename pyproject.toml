@@ -54,6 +54,15 @@ mkdocs-material = ">=9.5,<10"
 mkdocstrings = {version = ">=0.26,<1", extras = ["python"]}
 ruff = "*"  # lets mkdocstrings format long signatures
 
+# Kaggle CLI, for running long fits on Kaggle's free notebooks (push a notebook,
+# download its output): `poetry install --with remote`. Optional, never needed
+# to use or test the package.
+[tool.poetry.group.remote]
+optional = true
+
+[tool.poetry.group.remote.dependencies]
+kaggle = ">=1.6"
+
 [project.urls]
 Homepage = "https://github.com/drds1/pycream2"
 Documentation = "https://drds1.github.io/pycream2/"

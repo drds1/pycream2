@@ -338,3 +338,66 @@ def generate_free_lag_dataset(
         "S": S_true, "C": C_true, "bands": per_band_truth, "driver": driver_truth,
     }
     return {"bands": out_bands, "driver": driver_out, "truth": truth, "freqs": freqs, "tau_grid": tau_grid}
+
+
+def with_disc_fluxes(
+    data: dict, redshift: float, h0: float = 70.0, omega_m: float = 0.3, variable_fraction: float = 0.15,
+    host_mjy: Optional[Dict[str, float]] = None, ebv_galactic: float = 0.0, flux_unit: str = "mJy",
+    flux_scale: float = 1.0, variable_sed: str = "response", n_fine: int = 1500,
+) -> dict:
+    """Give a :func:`generate_synthetic_dataset` dataset absolute fluxes, for
+    trying the disc SED, distance and ``H_0`` analysis (:mod:`pycream2.disc_sed`)
+    on data whose answer is known.
+
+    Each band becomes ``host + disc``: the model disc of the dataset's own
+    ``log_mdot``/``inclination`` (``T ~ r^-3/4``, ``T_1`` from
+    :func:`~pycream2.forward_model.disk_t1_kelvin`) at the luminosity distance
+    that ``h0`` gives at ``redshift``. Its variable part, per standard
+    deviation of the driver, is ``variable_fraction`` of the bluest band's mean
+    disc flux there, and follows across the bands either the spectrum of the
+    disc's response to the lamppost (``variable_sed="response"``, the default
+    and the physical case) or the mean disc spectrum (``"mean"``: a constant
+    fractional amplitude, exactly the flux-flux analyses' assumption, so the
+    host subtraction is then exact). The light
+    curves are then dimmed by Galactic extinction and expressed in
+    ``flux_unit`` (``"mJy"``, or ``"f_lambda"`` in units of ``flux_scale``
+    erg/s/cm^2/A). Wavelengths are rest-frame. ``host_mjy`` gives each band's
+    host flux (default none). The truth is added as ``data["truth"]["disc_sed"]``.
+    """
+    from . import disc_sed
+    from .forward_model import disk_t1_kelvin, driver_at
+
+    truth = data["truth"]
+    host_mjy = host_mjy or {}
+    t_all = np.concatenate([d["t"] for d in data["bands"].values()])
+    t_fine = np.linspace(t_all.min(), t_all.max(), n_fine)
+    x = np.asarray(driver_at(np.asarray(truth["S"]), np.asarray(truth["C"]), data["freqs"], t_fine))
+    x_mean, x_sd = float(x.mean()), float(x.std())
+    if variable_sed not in ("response", "mean"):
+        raise ValueError(f"variable_sed must be 'response' or 'mean', got {variable_sed!r}")
+    t1 = float(disk_t1_kelvin(truth["log_mdot"], truth["M_BH"]))
+    dl_mpc = float(disc_sed.h0_from_dl(1.0, redshift, omega_m) / h0)
+    names = sorted(data["bands"], key=lambda n: data["bands"][n]["wavelength"])
+    lam = np.array([float(data["bands"][n]["wavelength"]) for n in names])
+    discs = disc_sed.disc_fnu_at_1cm(lam, redshift, t1, 0.75, truth["inclination"], truth["M_BH"]) / (
+        dl_mpc * disc_sed.MPC_CM) ** 2
+    shape = (disc_sed.response_sed_shape(lam, t1, 0.75, truth["M_BH"]) if variable_sed == "response" else discs)
+    variable = dict(zip(names, discs[0] * variable_fraction * shape / shape[0]))  # mJy per driver sd
+    discs = dict(zip(names, discs))
+    out = {"bands": {}, **{k: v for k, v in data.items() if k != "bands"}}
+    disc_truth = {}
+    for name, d in data["bands"].items():
+        lam_rest = float(d["wavelength"])
+        lam_obs = lam_rest * (1 + redshift)
+        disc = float(discs[name])
+        bt = truth["bands"][name]
+        echo = (np.asarray(d["y"]) - bt["C_band"]) / bt["S_band"]  # the response-smoothed driver (+ noise)
+        gain = float(variable[name]) / x_sd
+        y_mjy = host_mjy.get(name, 0.0) + disc + gain * (echo - x_mean)
+        dim = 10 ** (-0.4 * disc_sed.ccm_a_lambda(lam_obs, ebv_galactic)) / disc_sed.to_mjy([lam_obs], flux_unit, flux_scale)[0]
+        out["bands"][name] = dict(d, y=y_mjy * dim, yerr=np.asarray(d["yerr"]) / bt["S_band"] * gain * dim)
+        disc_truth[name] = dict(disc_mean_mjy=disc, host_mjy=host_mjy.get(name, 0.0))
+    out["truth"] = dict(truth, disc_sed=dict(redshift=redshift, h0=h0, omega_m=omega_m, dl_mpc=dl_mpc, t1_kelvin=t1,
+                                             ebv_galactic=ebv_galactic, flux_unit=flux_unit, flux_scale=flux_scale,
+                                             variable_sed=variable_sed, bands=disc_truth))
+    return out

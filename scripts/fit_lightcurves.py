@@ -170,6 +170,17 @@ def _parse_args():
             "Ignores the MCMC-only options and --title's checkpointing."
         ),
     )
+    sed = parser.add_argument_group(
+        "disc SED, distance and H0 (docs/disc_sed.md): run after the fit and added to report.html")
+    sed.add_argument("--sed-analysis", action="store_true", help="Run the analysis (needs --redshift).")
+    sed.add_argument("--redshift", type=float, default=None)
+    sed.add_argument("--flux-unit", default="mJy", choices=("mJy", "f_lambda"))
+    sed.add_argument("--flux-scale", type=float, default=1.0,
+                     help="For f_lambda, the unit in erg/s/cm^2/A (e.g. 1e-15); for mJy, a multiplier.")
+    sed.add_argument("--ebv-galactic", type=float, default=0.0, help="Galactic E(B-V) towards the AGN.")
+    sed.add_argument("--fit-intrinsic-ebv", action="store_true", help="Fit an intrinsic E(B-V) with the distance.")
+    sed.add_argument("--host-band", default=None,
+                     help="Band assumed to have no constant (host) component (default: the bluest).")
     parser.add_argument("--rng-seed", type=int, default=0)
     parser.add_argument("--checkpoint-every", type=int, default=100, help="Only used with --title.")
     parser.add_argument("--report-every", type=int, default=None, help="Only used with --title -- refresh report.html every this many new samples.")
@@ -197,9 +208,13 @@ def main():
         raise SystemExit("Add at least one --band or --free-lag-band.")
     _check_distinct_files(args.band + args.free_lag_band)
 
+    sed_options = {k: v for k, v in dict(fit_intrinsic_ebv=args.fit_intrinsic_ebv, host_band=args.host_band).items()
+                   if v}
     ef = EchoFit(
         M_BH=args.m_bh, title=args.title, output_dir=args.output_dir, drw_prior=args.drw_prior,
-        marginalise_linear=args.marginalise_linear,
+        marginalise_linear=args.marginalise_linear, redshift=args.redshift, flux_unit=args.flux_unit,
+        flux_scale=args.flux_scale, ebv_galactic=args.ebv_galactic, sed_analysis=args.sed_analysis,
+        sed_options=sed_options,
     )
     # --diffuse-continuum with no band names means every band.
     band_names = [b[0] for b in args.band] + [b[0] for b in args.free_lag_band]

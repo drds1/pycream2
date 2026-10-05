@@ -71,6 +71,7 @@ Regenerate with `python scripts/make_fit_animation.py`.*
 - [🔄 Swapping the response function](#-swapping-the-response-function)
 - [🌈 Emission-line / free-lag mode and driver light curves](#-emission-line--free-lag-mode-and-driver-light-curves)
 - [🧩 Extra components: diffuse continuum and slow backgrounds](#-extra-components-diffuse-continuum-and-slow-backgrounds)
+- [🌍 Disc SED, luminosity distance and H0](#-disc-sed-luminosity-distance-and-h0)
 - [⚠️ Status / caveats](#-status--caveats)
 - [📝 Citing pycream2](#-citing-pycream2)
 
@@ -278,6 +279,9 @@ pycream2/
     inference.py         run_mcmc / run_mcmc_chunked: NUTS wrapper (the
                           latter supports checkpointing/resuming)
     echofit.py           EchoFit: main user-facing class
+    disc_sed.py          disc_sed_analysis: flux-flux host/disc decomposition, dust
+                          correction, variable SED vs the disc's response, luminosity
+                          distance and H0 (EchoFit(sed_analysis=True))
     plotting.py          plot_raw_lightcurves, plot_lightcurve_fits, plot_power_spectrum,
                           plot_mcmc_diagnostics, plot_corner, plot_fourier_correlation
     reporting.py          generate_report: shared plots + report.html generation,
@@ -286,7 +290,8 @@ pycream2/
                           save/load (see "Fitting your own light curves" below)
     synthetic.py          generate_synthetic_dataset (physical bands) and
                           generate_free_lag_dataset (free-lag bands + driver)
-                          for tests / the demo notebook
+                          for tests / the demo notebook; with_disc_fluxes gives
+                          a dataset absolute fluxes from a disc at a known distance
 docs/
     fitting_guide.md      every setting, its default, and when to change it:
                           solver choice, NUTS options, grids, priors, lag modes
@@ -923,6 +928,41 @@ From the command line, add `--diffuse-continuum [BAND ...]` (all bands if
 none are named) or `--background-order K` to `scripts/fit_lightcurves.py`.
 `plot_lightcurve_fits()` shows both components: the response panel shows the
 mixed response, and the model curves include the background.
+
+## 🌍 Disc SED, luminosity distance and H0
+
+The delays fix the disc's temperature profile in light-days, so the model
+disc's flux depends only on its distance. Comparing it with the observed disc
+flux gives the luminosity distance, and with the redshift, H₀ (Cackett, Horne
+& Winkler 2007 found H₀ = 44 ± 5 km/s/Mpc this way). With `sed_analysis=True`
+pycream2 runs this after every `fit()` or `optimise()` and adds it to the
+report. It covers:
+
+- **Host and disc separation:** a flux-flux decomposition, assuming the
+  bluest band has no host light.
+- **Dust:** Galactic extinction (Cardelli, Clayton & Mathis 1989), and
+  optionally a fitted intrinsic E(B−V).
+- **The variable SED:** compared with the disc's predicted response to the
+  lamppost, with the temperature slope it implies on its own.
+- **D_L and H₀:** per posterior draw.
+
+Full method, both distance estimators, a worked example that recovers
+H₀ = 69 ± 2 for a true 70, and the caveats:
+[`docs/disc_sed.md`](docs/disc_sed.md).
+
+```python
+ef = EchoFit(M_BH=2.55e8, redshift=0.047, flux_unit="mJy",   # or "f_lambda", flux_scale=1e-15
+             ebv_galactic=0.022, sed_analysis=True)
+# ... add_lightcurve() with rest-frame wavelengths and absolute fluxes, build_grid() ...
+ef.optimise()
+print(ef.disc_sed["summary"]["h0"])   # [16th, 50th, 84th percentile]
+ef.plot_disc_sed()
+```
+
+From the command line: `scripts/fit_lightcurves.py --sed-analysis
+--redshift 0.047 --ebv-galactic 0.022`. An implausible H₀ is a warning in
+itself: slow variability left out of the model makes the disc look larger and
+further away (fit a slow background with `background_order`).
 
 ## 🌈 Emission-line / free-lag mode and driver light curves
 

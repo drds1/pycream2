@@ -41,6 +41,7 @@ nav:
       - Thin-disk response function: thin_disk_response.md
       - Comparison with CREAM's response: cream_response_comparison.md
       - "Extra components: diffuse continuum and slow backgrounds": extra_components.md
+      - "Disc SED, luminosity distance and H0": disc_sed.md
   - Under the hood:
       - How the MCMC works: mcmc_implementation.md
       - Performance and the direct solve: performance_improvements.md

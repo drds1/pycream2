@@ -840,3 +840,82 @@ def plot_optimise_restarts(
     fig.suptitle(f"{n_agree} of {len(restarts)} restarts agree (within {agreement_sd:g} posterior sd)")
     fig.tight_layout()
     return fig, axes
+
+
+def plot_disc_sed(result: dict, bands: Dict[str, dict], figsize=(10, 7.5)):
+    """The disc SED, distance and H_0 analysis (:func:`pycream2.disc_sed.disc_sed_analysis`):
+    flux-flux diagram, variable SED against the disc's predicted response
+    spectrum, mean disc SED against the model disc at the fitted distance, and
+    the H_0 posterior. Fluxes in mJy, corrected for Galactic extinction."""
+    d, s = result["draws"], result["summary"]
+    names, lam = d["names"], d["lam_rest"]
+    colours = {n: wavelength_to_colour(bands[n]["wavelength"]) for n in names}
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+
+    # Flux-flux: each band's flux against the driver, the fitted line, and the
+    # disc's zero point X_0 (where the host band's model flux vanishes).
+    ax = axes[0, 0]
+    x_med = np.median(d["x"], axis=0)
+    x0 = float(np.median(d["x0"]))
+    grid = np.linspace(min(x0, x_med.min()), x_med.max(), 50)
+    for k, n in enumerate(names):
+        t = np.asarray(bands[n]["t"])
+        ax.plot(np.interp(t, d["t_fine"], x_med), np.asarray(bands[n]["y"]) * d["conv"][k], ".", ms=2,
+                color=colours[n], alpha=0.5)
+        ax.plot(grid, (np.median(d["C"][k]) + np.median(d["S"][k]) * grid) * d["conv"][k], color=colours[n],
+                lw=1.0, label=n)
+    ax.axvline(x0, color="k", ls="--", lw=0.8, label=r"disc zero point $X_0$")
+    ax.axvline(float(np.median(d["xmean"])), color="0.5", ls=":", lw=0.8, label=r"mean state $\langle X\rangle$")
+    ax.set_xlabel(r"driver $X(t)$")
+    ax.set_ylabel(r"$f_\nu$ (mJy)")
+    ax.set_title("flux-flux decomposition")
+    ax.legend(frameon=False, fontsize=6, ncol=2)
+
+    def band_errorbar(ax, arr, **kw):
+        lo, med, hi = np.percentile(arr, [16, 50, 84], axis=1)
+        ax.errorbar(lam, med, [med - lo, hi - med], **kw)
+
+    ax = axes[0, 1]
+    band_errorbar(ax, d["variable"], fmt="o", ms=4, color="k", label="observed bright $-$ faint")
+    ax.plot(lam, np.median(d["predicted_variable"], axis=1), "s--", ms=3, color="tab:red", lw=0.9,
+            label="disc response, fitted $T(r)$")
+    a_var, a_fit = s["alpha_var"], s["alpha"]
+    ax.set_title(rf"variable SED: $\alpha_{{\rm var}}$ = {a_var[1]:.2f}, $\alpha_{{\rm fit}}$ = {a_fit[1]:.2f}")
+
+    ax = axes[1, 0]
+    band_errorbar(ax, d["total_mean"], fmt="o", ms=4, color="k", label="observed mean")
+    ax.plot(lam, np.median(d["model_disc"], axis=1), "s--", ms=3, color="tab:blue", lw=0.9,
+            label=rf"model disc at $D_L$ = {s['dl_mpc'][1]:.0f} Mpc")
+    if d["distance_method"] == "flux_flux":
+        band_errorbar(ax, d["disc_mean"], fmt="D", ms=3, color="tab:blue", mfc="white", label="flux-flux disc")
+    host = np.median(d["constant"], axis=1)
+    ax.plot(lam[host > 0], host[host > 0], "^:", ms=4, color="tab:green", lw=0.8, label="host (mean $-$ disc)")
+    ax.set_title(f"mean SED: disc + host ({s['host_band']} has no host)")
+    from matplotlib.ticker import FuncFormatter
+
+    plain = FuncFormatter(lambda v, _: f"{v:g}")
+    for ax in (axes[0, 1], axes[1, 0]):
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        for axis in (ax.xaxis, ax.yaxis):
+            axis.set_major_formatter(plain)
+            axis.set_minor_formatter(plain)
+        ax.set_xlabel(r"rest wavelength (Å)")
+        ax.set_ylabel(r"$f_\nu$ (mJy)")
+        ax.legend(frameon=False, fontsize=7)
+
+    ax = axes[1, 1]
+    h0 = d["h0"][np.isfinite(d["h0"])]
+    ax.hist(h0, bins=40, color="0.6")
+    lo, med, hi = s["h0"]
+    ax.axvline(med, color="k", lw=1.0)
+    ax.axvspan(lo, hi, color="0.85", zorder=0)
+    ax.axvline(70.0, color="tab:green", ls="--", lw=0.9, label=r"70 km s$^{-1}$ Mpc$^{-1}$")
+    ax.set_xlabel(r"$H_0$ (km s$^{-1}$ Mpc$^{-1}$)")
+    ax.set_title(rf"$H_0$ = {med:.0f}$^{{+{hi - med:.0f}}}_{{-{med - lo:.0f}}}$, "
+                 rf"$D_L$ = {s['dl_mpc'][1]:.0f} Mpc (z = {s['redshift']:.4g})")
+    ax.legend(frameon=False, fontsize=7)
+    for ax in axes.flat:
+        ax.grid(alpha=0.6)
+    fig.tight_layout()
+    return fig, axes

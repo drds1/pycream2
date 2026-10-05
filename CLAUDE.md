@@ -1015,6 +1015,29 @@ match; `pycream2.__version__` reads the installed metadata);
       search cannot backtrack, so the restart aborted with a NaN (seen on NGC 5548 and in the extra-components
       tests). The objective now returns `_NONFINITE_POTENTIAL` (1e10) with a zero gradient there.
 
+24. **Disc SED, luminosity distance and H_0 (`pycream2/disc_sed.py`, `EchoFit(redshift=..., flux_unit=...,
+    ebv_galactic=..., sed_analysis=True)`, October 2026, a direct request; full write-up `docs/disc_sed.md`,
+    figure from `scripts/plot_disc_sed_example.py`).** Cackett, Horne & Winkler (2007)'s test: the delays fix
+    T(r) in light-days, so the model disc's flux depends only on D_L; with z, that gives H_0. Opt-in, run at the
+    end of `fit()` (both paths) and `optimise()` by `_maybe_disc_sed()`, which **only warns on failure** (never
+    lose a finished fit to post-processing), and added to `report.html` when `ef.disc_sed` is set.
+    - **Two distance estimators, and why the default is not the classic one.** The flux-flux decomposition
+      (C + S X(t), zero point where the host band's model flux vanishes) assumes the variable SED has the mean
+      disc's shape. The lamppost response is bluer than the disc, so flux-flux leaves disc light in the redder
+      bands' "host" and biases H_0 low: measured on `synthetic.with_disc_fluxes` data, 63.1 against a true 70
+      (the host-band estimator gives 68.9). The default `distance_method="host_band"` uses only the method's
+      own assumption (the bluest band has no host): its whole mean flux is disc, so it alone gives D_L, and
+      every other band's host is mean minus model disc (warned if negative). `"flux_flux"` stays available,
+      and is required for `fit_intrinsic_ebv` (several bands' disc fluxes are needed). Both are always
+      reported.
+    - Needs absolute fluxes (warns when the zero point lies above the mean state, the signature of
+      mean-subtracted light curves) and rest-frame wavelengths. `with_disc_fluxes` gives synthetic data a known
+      answer (`variable_sed="response"`, the physical default, or `"mean"`, where flux-flux is exact).
+    - New constructor settings persist across `resume()` (manifest; tested, the recurring bug class).
+    - **An implausible H_0 is a diagnostic, not just a bad number:** on a real campaign with a strong
+      months-long trend, disc fits without `background_order` absorbed the trend into long responses
+      (inclination at the prior edge, T_1 ~9x too hot) and gave H_0 ~ 6. Fit the background first.
+
 ## Known rough edges / things to check before trusting results on real data
 
 - `synthetic.py`'s ground truth is generated with the *same* forward model

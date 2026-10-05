@@ -6,6 +6,14 @@ Generated from the docstrings in the source code.
 
 ::: pycream2.EchoFit
 
+## Disc SED, distance and H0
+
+::: pycream2.disc_sed
+
+::: pycream2.disc_sed.disc_sed_analysis
+
+::: pycream2.synthetic.with_disc_fluxes
+
 ## Response functions
 
 ::: pycream2.forward_model.lag_scaling

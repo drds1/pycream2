@@ -147,6 +147,14 @@ def generate_report(
         fig_bof.savefig(paths["bof"], dpi=150, bbox_inches="tight")
         figs_to_close.append(fig_bof)
 
+    # Only when the disc SED/distance analysis has run (EchoFit(sed_analysis=True)
+    # or ef.disc_sed_analysis()).
+    if getattr(ef, "disc_sed", None) is not None:
+        fig_sed, _ = ef.plot_disc_sed()
+        paths["disc_sed"] = out_dir / "disc_sed.png"
+        fig_sed.savefig(paths["disc_sed"], dpi=150, bbox_inches="tight")
+        figs_to_close.append(fig_sed)
+
     for fig in figs_to_close:
         plt.close(fig)
 
@@ -161,6 +169,57 @@ def generate_report(
         _report_html(ef, paths, data_uris, fit_seconds, n_div, n_total, truth, title)
     )
     return report_path
+
+
+def _disc_sed_section_html(ef, paths, data_uris) -> str:
+    s = ef.disc_sed["summary"]
+
+    def pm(q, fmt="{:.3g}"):
+        lo, med, hi = q
+        return f"{fmt.format(med)} (+{fmt.format(hi - med)}/&minus;{fmt.format(med - lo)})"
+
+    rows = [("luminosity distance D_L (Mpc)", pm(s["dl_mpc"], "{:.0f}")),
+            ("H_0 (km/s/Mpc)", pm(s["h0"], "{:.1f}")),
+            ("estimator", s["distance_method"]),
+            ("H_0 from the host band alone", pm(s["h0_host_band"], "{:.1f}")),
+            ("H_0 from the flux-flux decomposition", pm(s["h0_flux_flux"], "{:.1f}")),
+            ("temperature slope alpha (fit)", pm(s["alpha"], "{:.2f}")),
+            ("alpha implied by the variable SED", pm(s["alpha_var"], "{:.2f}")),
+            ("T_1 at 1 light-day (K)", pm(s["t1_kelvin"], "{:.3g}")),
+            ("inclination (deg)", pm(s["inclination"], "{:.1f}"))]
+    if s["fit_intrinsic_ebv"]:
+        rows.append(("intrinsic E(B-V) (mag)", pm(s["ebv_intrinsic"], "{:.3f}")))
+    table = "".join(f"<tr><td>{a}</td><td>{b}</td></tr>" for a, b in rows)
+    band_rows = "".join(
+        f"<tr><td>{n}</td><td>{b['lam_rest']:.0f}</td><td>{b['variable_mjy'][1]:.3g}</td>"
+        f"<td>{b['predicted_variable_mjy'][1]:.3g}</td><td>{b['disc_mean_mjy'][1]:.3g}</td>"
+        f"<td>{b['constant_mjy'][1]:.3g}</td><td>{b['model_disc_mjy'][1]:.3g}</td><td>{b['dl_mpc'][1]:.0f}</td></tr>"
+        for n, b in s["bands"].items())
+    warning = ""
+    if s["zero_point_below_faint_state"] < 0.95:
+        warning = ("<p><b>Warning:</b> in some draws the disc zero point lies inside the observed range of the "
+                   "driver, so the host band has a negative constant component; the host subtraction is "
+                   "unreliable.</p>")
+    return f"""
+<h2>Disc SED, luminosity distance and H<sub>0</sub></h2>
+<p>The delays fix the disc's temperature profile in light-days, so the model disc's flux depends only on its
+distance (Cackett, Horne &amp; Winkler 2007): comparing it with the observed disc flux gives D<sub>L</sub>, and
+with z = {s['redshift']:.4g}, H<sub>0</sub> (flat &Lambda;CDM, &Omega;<sub>m</sub> = {s['omega_m']:.2f}).
+The {s['host_band']} band is assumed to have no host light: with the default estimator its whole mean flux
+is disc, which gives D<sub>L</sub>, and every other band's host is its mean flux minus the model disc. The
+flux-flux estimator instead puts the disc's zero point where the {s['host_band']} model flux vanishes and fits
+all bands; it assumes the variable SED has the mean disc's shape, which the bluer lamppost response does not,
+and so places D<sub>L</sub> too far (see docs/disc_sed.md). Fluxes are in mJy, corrected for Galactic
+E(B&minus;V) =
+{s['ebv_galactic']:.3f}{" and a fitted intrinsic E(B&minus;V)" if s['fit_intrinsic_ebv'] else ""}.
+Median (16th/84th percentile offsets) over {s['n_draws']} posterior draws. An implausible H<sub>0</sub> is a
+warning that the disc fit is absorbing something else (e.g. slow variability: try background_order).</p>
+<table>{table}</table>
+<table><tr><th>band</th><th>rest &lambda; (&Aring;)</th><th>variable (mJy)</th><th>predicted variable</th>
+<th>disc, mean state</th><th>constant (host)</th><th>model disc at D<sub>L</sub></th>
+<th>D<sub>L</sub> from band (Mpc)</th></tr>{band_rows}</table>
+{warning}<img src="{data_uris['disc_sed']}" alt="{paths['disc_sed'].name}">
+"""
 
 
 def _truth_value_for(name: str, truth: Optional[dict]):
@@ -292,6 +351,8 @@ boundaries.</p>
 <img src="{data_uris['bof']}" alt="{paths['bof'].name}">
 """
 
+    disc_sed_section = _disc_sed_section_html(ef, paths, data_uris) if "disc_sed" in paths else ""
+
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>pycream2 report{f' -- {title}' if title else ''}</title>
 <style>
@@ -333,5 +394,5 @@ that's worth a closer look.</p>
 <p>Traces should look like noisy horizontal bands (well-mixed), not
 slow drifts or a chain stuck at one value.</p>
 <img src="{data_uris['diagnostics']}" alt="{paths['diagnostics'].name}">
-{corner_section}{bof_section}</body></html>
+{corner_section}{bof_section}{disc_sed_section}</body></html>
 """

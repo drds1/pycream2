@@ -34,6 +34,7 @@ from .forward_model import (
     legendre_background_basis, mix_diffuse_continuum,
 )
 from .grid_utils import estimate_dt_min, graded_tau_grid, check_tau_grid_resolution
+from . import disc_sed
 from . import plotting
 from . import reporting
 from . import run_manager
@@ -164,6 +165,29 @@ class EchoFit:
         response function that accepts ``viscous_slope`` (e.g.
         ``forward_model.thin_disk_response``; the default skew-normal does
         not). Delays then scale as ``wavelength**(1/alpha)``.
+    redshift : float, optional
+        The AGN's redshift. Needed only for the disc SED, distance and
+        ``H_0`` analysis (``sed_analysis``, :meth:`disc_sed_analysis`); band
+        wavelengths are taken to be rest-frame, as the disc physics needs.
+    flux_unit : str, optional
+        The light curves' flux unit, for the SED analysis: ``"mJy"``
+        (default) or ``"f_lambda"``, with ``flux_scale`` the unit in
+        erg/s/cm^2/A (e.g. ``1e-15``). For ``"mJy"``, ``flux_scale``
+        multiplies the fluxes (default 1).
+    flux_scale : float, optional
+        See ``flux_unit``.
+    ebv_galactic : float, optional
+        Galactic ``E(B-V)`` towards the AGN (e.g. Schlafly & Finkbeiner
+        2011), corrected for in the SED analysis. Default 0.
+    sed_analysis : bool, optional
+        ``True``: run :meth:`disc_sed_analysis` automatically at the end of
+        every ``.fit()`` and ``.optimise()`` (needs ``redshift``), and include
+        it in the report. Default ``False``. A failure there only warns, so it
+        never costs a finished fit.
+    sed_options : dict, optional
+        Further keyword arguments for
+        :func:`pycream2.disc_sed.disc_sed_analysis` (``fit_intrinsic_ebv``,
+        ``omega_m``, ``host_band``, ``lamppost_height_rs``, ``n_draws``).
 
     Examples
     --------
@@ -189,6 +213,8 @@ class EchoFit:
         self, M_BH: Optional[float] = None, title: Optional[str] = None, output_dir: Optional[str] = None,
         fixed_params: Optional[Dict[str, float]] = None, drw_prior: bool = False,
         marginalise_linear: bool = False, fit_temperature_slope: bool = False,
+        redshift: Optional[float] = None, flux_unit: str = "mJy", flux_scale: float = 1.0,
+        ebv_galactic: float = 0.0, sed_analysis: bool = False, sed_options: Optional[dict] = None,
     ):
         self.M_BH = float(M_BH) if M_BH is not None else None
         self.title = title
@@ -196,6 +222,16 @@ class EchoFit:
         self.drw_prior = bool(drw_prior)
         self.marginalise_linear = bool(marginalise_linear)
         self.fit_temperature_slope = bool(fit_temperature_slope)
+        if flux_unit not in disc_sed.FLUX_UNITS:
+            raise ValueError(f"flux_unit must be one of {disc_sed.FLUX_UNITS}, got {flux_unit!r}")
+        if sed_analysis and redshift is None:
+            raise ValueError("sed_analysis=True needs the redshift (EchoFit(..., redshift=...)).")
+        self.redshift = float(redshift) if redshift is not None else None
+        self.flux_unit, self.flux_scale = flux_unit, float(flux_scale)
+        self.ebv_galactic = float(ebv_galactic)
+        self.sed_analysis = bool(sed_analysis)
+        self.sed_options: dict = dict(sed_options) if sed_options else {}
+        self.disc_sed: Optional[dict] = None
         self.bands: Dict[str, dict] = {}
         self.driver_data: Optional[dict] = None
         self.freqs: Optional[np.ndarray] = None
@@ -599,6 +635,9 @@ class EchoFit:
             fixed_params=manifest.get("fixed_params"), drw_prior=manifest.get("drw_prior", False),
             marginalise_linear=manifest.get("marginalise_linear", False),
             fit_temperature_slope=manifest.get("fit_temperature_slope", False),
+            redshift=manifest.get("redshift"), flux_unit=manifest.get("flux_unit", "mJy"),
+            flux_scale=manifest.get("flux_scale", 1.0), ebv_galactic=manifest.get("ebv_galactic", 0.0),
+            sed_analysis=manifest.get("sed_analysis", False), sed_options=manifest.get("sed_options"),
         )
         ef.run_dir = run_dir
         ef._fit_config = manifest["fit_config"]
@@ -730,6 +769,7 @@ class EchoFit:
             self.samples = {k: v.reshape((-1,) + v.shape[2:]) for k, v in self._samples_by_chain.items()}
             self.extra_fields = self.mcmc.get_extra_fields()
             self._extra_fields_by_chain = self.mcmc.get_extra_fields(group_by_chain=True)
+            self._maybe_disc_sed()
             return self
 
         # -- title given: checkpointed/resumable single-chain path --
@@ -796,6 +836,9 @@ class EchoFit:
                     drw_prior=self.drw_prior,
                     marginalise_linear=self.marginalise_linear,
                     fit_temperature_slope=self.fit_temperature_slope,
+                    redshift=self.redshift, flux_unit=self.flux_unit, flux_scale=self.flux_scale,
+                    ebv_galactic=self.ebv_galactic, sed_analysis=self.sed_analysis,
+                    sed_options=self.sed_options,
                 ))
 
         chunk_samples_so_far, chunk_extra_so_far = [], []
@@ -844,6 +887,7 @@ class EchoFit:
         self.mcmc = None  # no single mcmc object spans all chunks in this path
 
         self._save_chains(self.run_dir)
+        self._maybe_disc_sed()
         if generate_report:
             reporting.generate_report(
                 self, self.run_dir, fit_seconds=fit_seconds, title=self.title
@@ -1145,7 +1189,41 @@ class EchoFit:
         self.optimise_result = best
         timings["draws_seconds"] = time.perf_counter() - t0
         self.optimise_timings = timings
+        self._maybe_disc_sed()
         return self
+
+    # ------------------------------------------------------------------
+    def disc_sed_analysis(self, **overrides) -> dict:
+        """The disc's variable and mean SED, luminosity distance and ``H_0``
+        from this fit (Cackett, Horne & Winkler 2007's test): see
+        :mod:`pycream2.disc_sed`. Uses the constructor's ``redshift``,
+        ``flux_unit``, ``flux_scale``, ``ebv_galactic`` and ``sed_options``;
+        ``overrides`` replace any of them for this call. Stores the result
+        in ``self.disc_sed`` (``"summary"`` and per-draw ``"draws"``) and
+        returns the summary."""
+        options = dict(redshift=self.redshift, flux_unit=self.flux_unit, flux_scale=self.flux_scale,
+                       ebv_galactic=self.ebv_galactic, **self.sed_options)
+        options.update(overrides)
+        if options["redshift"] is None:
+            raise ValueError("disc_sed_analysis needs the redshift: EchoFit(..., redshift=...) or redshift=...")
+        self.disc_sed = disc_sed.disc_sed_analysis(self, **options)
+        return self.disc_sed["summary"]
+
+    def _maybe_disc_sed(self):
+        if not self.sed_analysis:
+            return
+        try:
+            self.disc_sed_analysis()
+        except Exception as exc:  # never lose a finished fit to the post-processing
+            warnings.warn(f"disc SED analysis failed: {exc}")
+
+    def plot_disc_sed(self, **kwargs):
+        """Flux-flux diagram, variable and mean disc SED, and ``H_0``: see
+        :func:`plotting.plot_disc_sed`. Runs :meth:`disc_sed_analysis` first
+        if it has not been run."""
+        if self.disc_sed is None:
+            self.disc_sed_analysis()
+        return plotting.plot_disc_sed(self.disc_sed, self.bands, **kwargs)
 
     def _optimum_init_values(self) -> dict:
         """Initial values for every sample site of the model ``.fit()`` will

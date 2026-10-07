@@ -90,7 +90,9 @@ OPTIMISE = dict(num_samples=1000, num_restarts=4)
 # unusable here: warmup collapsed the step size to ~1e-5 with every iteration
 # at the 1023-step ceiling (~20 s per iteration on g and i alone), whereas the
 # marginalised model needs ~7 steps per sample.
-NUTS = dict(num_warmup=500, num_samples=500)
+# 300 + 300 (the first Kaggle wave used 500 + 500): enough for the mean and sd
+# of two parameters, and ~40% cheaper.
+NUTS = dict(num_warmup=300, num_samples=300)
 
 
 def config_label(band_set: str, snr: float, cadence: float, seed: int) -> str:

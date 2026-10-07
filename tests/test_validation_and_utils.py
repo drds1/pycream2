@@ -29,6 +29,18 @@ def test_add_lightcurve_rejects_unknown_lag_mode():
         ef.add_lightcurve("g", wavelength=4770.0, t=[0.0], y=[0.0], yerr=[0.1], lag_mode="nonsense")
 
 
+def test_build_grid_period_max_sets_the_lowest_driver_frequency():
+    t = np.linspace(0.0, 100.0, 101)
+    ef = EchoFit(M_BH=1e8)
+    ef.add_lightcurve("g", wavelength=4770.0, t=t, y=np.sin(t / 10.0), yerr=np.full_like(t, 0.1))
+    ef.build_grid(n_freq=10, n_tau=30)
+    default_max = float(ef.freqs.max())
+    assert np.isclose(float(ef.freqs.min()), 2.0 * np.pi / 100.0)
+    ef.build_grid(n_freq=10, n_tau=30, period_max=400.0)
+    assert np.isclose(float(ef.freqs.min()), 2.0 * np.pi / 400.0)
+    assert np.isclose(float(ef.freqs.max()), default_max)  # the upper bound is unchanged
+
+
 def test_build_grid_without_any_lightcurve_raises():
     ef = EchoFit(M_BH=1e8)
     with pytest.raises(ValueError, match="Add at least one light curve"):

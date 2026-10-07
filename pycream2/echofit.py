@@ -364,6 +364,7 @@ class EchoFit:
         tau_max: Optional[float] = None,
         dt_min: Optional[float] = None,
         tau_grid_power: float = 3.0,
+        period_max: Optional[float] = None,
     ):
         """Build the shared driver-frequency grid and lag grid from the
         currently registered light curves.
@@ -395,6 +396,16 @@ class EchoFit:
             explicitly if you want direct control (e.g. to match a known
             cadence) rather than relying on the data-driven estimate, which
             can be noisy for sparse or highly irregular sampling.
+        period_max : float, optional
+            Longest driver period (days); sets the frequency grid's lower
+            bound ``w_min = 2 pi / period_max``. Defaults to the time
+            baseline. A red-noise driver (a random walk especially) has
+            strong trends on longer timescales than the campaign, which a
+            baseline-length longest period cannot represent; on synthetic
+            random-walk data the fit then biased ``log_mdot`` and
+            ``inclination`` high, absorbing the trends into long responses
+            (``scripts/synthetic_recovery_grid.py``). A few times the
+            baseline plus ``tau_max`` removed the bias there.
         """
         if not self.bands:
             raise ValueError("Add at least one light curve before build_grid().")
@@ -407,7 +418,7 @@ class EchoFit:
         if dt_min is None:
             dt_min = estimate_dt_min(all_t_arrays, t_span=t_span)
 
-        w_min = 2.0 * np.pi / t_span
+        w_min = 2.0 * np.pi / (t_span if period_max is None else period_max)
         w_max = np.pi / dt_min
         self.freqs = jnp.asarray(np.geomspace(w_min, w_max, n_freq))
 

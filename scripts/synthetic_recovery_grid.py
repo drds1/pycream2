@@ -198,6 +198,26 @@ def run_one(band_set: str, snr: float, cadence: float, seed: int, method: str, o
           f"  i {inc['mean']:.1f}+/-{inc['sd']:.1f} (true {TRUE_INCLINATION:g})", flush=True)
 
 
+def _cost(job) -> float:
+    """Rough relative cost of one fit: NUTS ~20x optimise(), both ~linear in the data."""
+    _, band_set, _, cadence, method = job
+    return (20.0 if method == "nuts" else 1.0) * len(band_set) * T_SPAN / cadence
+
+
+def _shard(todo: list, k: int, n: int) -> list:
+    """Worker k's share of ``todo`` out of n: longest-processing-time-first
+    assignment by ``_cost``, so the expensive NUTS fits spread across workers
+    (every worker computes the same assignment). Each worker runs its share
+    most expensive first."""
+    load, mine = [0.0] * n, []
+    for job in sorted(todo, key=_cost, reverse=True):
+        w = min(range(n), key=lambda i: load[i])
+        load[w] += _cost(job)
+        if w == k:
+            mine.append(job)
+    return mine
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, required=True, help="output directory, one folder per configuration")
@@ -206,11 +226,11 @@ def main() -> None:
     parser.add_argument("--cadences", nargs="+", type=float, default=CADENCES)
     parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS)
     parser.add_argument("--methods", nargs="+", default=METHODS, choices=METHODS)
-    parser.add_argument("--shard", default="0/1", help="K/N: run every N-th fit starting at the K-th")
+    parser.add_argument("--shard", default="0/1", help="K/N: this worker's share (K of N) of the fits")
     args = parser.parse_args()
     k, n = (int(v) for v in args.shard.split("/"))
-    todo = list(itertools.product(args.seeds, args.band_sets, args.snrs, args.cadences, args.methods))[k::n]
-    for seed, band_set, snr, cadence, method in todo:
+    todo = list(itertools.product(args.seeds, args.band_sets, args.snrs, args.cadences, args.methods))
+    for seed, band_set, snr, cadence, method in _shard(todo, k, n):
         try:
             run_one(band_set, snr, cadence, seed, method, args.out)
         except Exception as exc:  # keep going: one failed fit should not lose the rest of a long batch

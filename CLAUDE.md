@@ -1094,6 +1094,20 @@ match; `pycream2.__version__` reads the installed metadata);
       `lamppost_efficiency = 0.2` is illustrative (rim face ~6000 K for a viscous disc at 1500 K at 5 ld).
     - `synthetic.generate_synthetic_dataset(response=...)` takes any response function for the truth.
 
+27. **The driver's longest Fourier period defaults to `2 (baseline + tau_max)`, not the baseline
+    (`build_grid(period_max=...)`, `PERIOD_MAX_FACTOR`; October 2026, found by the synthetic recovery grid,
+    `scripts/synthetic_recovery_grid.py`, CREAM-paper-style data with a random-walk driver).** With the
+    baseline as the longest period the fit cannot represent a red-noise driver's trends on longer timescales,
+    and absorbs them into long, inclined responses: on g and i at SNR 100 over 100 days, two of three seeds
+    gave log_mdot 4.7 and 5.7 (true 1.95) and inclination ~65 degrees (true 30), with the potential at the
+    truth ~20 units *worse* than at the biased solution with both held fixed (so the posterior, not the
+    optimiser). The potential at the truth improved steeply up to `period_max ~ 2 (T + tau_max)` (the window
+    the driver must cover, doubled) and was flat beyond it (within 1-2 units up to 1000 days, three seeds); at
+    that setting the truth and the biased solution are within ~0.5 units on the hardest seed, i.e. what is
+    left is the data's genuine weak constraint, which SNR 1000 removes. `n_freq` was left at 60 (80 made no
+    difference). `synthetic.generate_synthetic_dataset` draws its truth on a baseline-length Fourier grid, so
+    the existing recovery tests could never have caught this. Every earlier fit used the old grid.
+
 ## Known rough edges / things to check before trusting results on real data
 
 - `synthetic.py`'s ground truth is generated with the *same* forward model
@@ -1105,8 +1119,9 @@ match; `pycream2.__version__` reads the installed metadata);
   Kalman-filter/celerite-style likelihood instead: that's a bigger change
   and would touch `model.py` more than `forward_model.py`.
 - `n_freq` / `n_tau` / `tau_max` in `EchoFit.build_grid()` are still simple
-  heuristics (log-spaced frequencies from the baseline to a Nyquist-style
-  estimate; `tau_max` defaults to half the time baseline). The frequency
+  heuristics (log-spaced frequencies from a longest period of
+  `2 (baseline + tau_max)`, decision #27, to a Nyquist-style estimate;
+  `tau_max` defaults to half the time baseline). The frequency
   upper bound (`w_max = pi / dt_min`) now comes from
   `grid_utils.estimate_dt_min`, a robust (5th-percentile) estimate of
   observation gaps, shared with `synthetic.py`'s ground-truth grid. This

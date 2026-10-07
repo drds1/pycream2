@@ -48,7 +48,9 @@ def _build_echofit(data, drw_prior: bool = False):
     ef = EchoFit(M_BH=data["truth"]["M_BH"], drw_prior=drw_prior)
     for name, d in data["bands"].items():
         ef.add_lightcurve(name, wavelength=d["wavelength"], t=d["t"], y=d["y"], yerr=d["yerr"])
-    ef.build_grid(n_freq=15, n_tau=100)
+    # Fit on the truth's own basis: the generator draws its driver with a
+    # longest period of the baseline, shorter than build_grid()'s default.
+    ef.build_grid(n_freq=15, n_tau=100, period_max=2 * np.pi / float(data["freqs"].min()))
     return ef
 
 

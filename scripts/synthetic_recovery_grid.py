@@ -66,17 +66,21 @@ BAND_SETS = ["gi", "gri", "ugriz"]
 SNRS = [30, 100, 300, 1000]
 CADENCES = [0.5, 1.0, 2.0, 4.0]  # mean days between points, per filter
 SEEDS = list(range(5))
-# "optimise_default" is optimise() on build_grid()'s default frequency grid
-# (longest period = the baseline), to measure the bias PERIOD_MAX removes.
-METHODS = ["optimise", "nuts", "optimise_default"]
+# Two more optimise() runs on other frequency grids: "optimise_auto" uses
+# build_grid()'s default, 2 (baseline + tau_max) = ~260 days here, with 60
+# frequencies; "optimise_baseline" uses the baseline as the longest period (the
+# default until October 2026), to measure the bias a longer period removes.
+METHODS = ["optimise", "nuts", "optimise_auto", "optimise_baseline"]
 
 T_SPAN = 100.0  # days
 DT_SIM = 0.05  # days, simulation grid
 TAU_MAX = 30.0  # days, the fit's lag grid; the responses are ~0 well before this
-# The driver's longest Fourier period and number of frequencies. The default
-# grid's longest period, the 100-day baseline, cannot represent a random walk's
-# longer trends, and the fit absorbed them into long, inclined responses
-# (log_mdot ~2.8 too high on one seed); see the build_grid() docstring.
+# The driver's longest Fourier period and number of frequencies for the main
+# fits (optimise and nuts). A longest period of only the 100-day baseline
+# cannot represent a random walk's longer trends, and the fit absorbed them
+# into long, inclined responses (log_mdot ~2.8 too high on one seed); see the
+# build_grid() docstring. These fits were run before build_grid()'s default
+# became 2 (baseline + tau_max), and use a longer period still.
 PERIOD_MAX = 400.0  # days, ~3 x (T_SPAN + TAU_MAX)
 N_FREQ = 80
 JITTER = 0.3  # each time is i * cadence + U(-JITTER, JITTER) * cadence
@@ -129,7 +133,9 @@ def simulate(band_set: str, snr: float, cadence: float, seed: int) -> dict:
     return bands
 
 
-def make_echofit(bands: dict, default_grid: bool = False, marginalise_linear: bool = False):
+def make_echofit(bands: dict, frequency_grid: str = "main", marginalise_linear: bool = False):
+    """``frequency_grid``: "main" (PERIOD_MAX, N_FREQ), "auto" (build_grid()'s
+    default) or "baseline" (longest period = the data's baseline)."""
     import pycream2.model as model
     from pycream2 import EchoFit
 
@@ -137,8 +143,11 @@ def make_echofit(bands: dict, default_grid: bool = False, marginalise_linear: bo
     ef = EchoFit(M_BH=M_BH, marginalise_linear=marginalise_linear)
     for name, d in bands.items():
         ef.add_lightcurve(name, wavelength=d["wavelength"], t=d["t"], y=d["y"], yerr=d["yerr"])
-    if default_grid:
+    if frequency_grid == "auto":
         ef.build_grid(tau_max=TAU_MAX)
+    elif frequency_grid == "baseline":
+        t = np.concatenate([d["t"] for d in bands.values()])
+        ef.build_grid(tau_max=TAU_MAX, period_max=t.max() - t.min())
     else:
         ef.build_grid(tau_max=TAU_MAX, period_max=PERIOD_MAX, n_freq=N_FREQ)
     return ef
@@ -156,7 +165,8 @@ def run_one(band_set: str, snr: float, cadence: float, seed: int, method: str, o
     if (dest / f"{method}.json").exists():
         return
     bands = simulate(band_set, snr, cadence, seed)
-    ef = make_echofit(bands, default_grid=(method == "optimise_default"), marginalise_linear=(method == "nuts"))
+    grid = method.split("_")[1] if "_" in method else "main"
+    ef = make_echofit(bands, frequency_grid=grid, marginalise_linear=(method == "nuts"))
     t0 = time.perf_counter()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

@@ -201,6 +201,45 @@ def figure_optimise_vs_nuts(rows, figures: Path) -> None:
     plt.close(fig)
 
 
+GRID_VARIANTS = {"optimise_baseline": ("longest period = baseline (old default)", "#eb6834"),
+                 "optimise_auto": ("2 (baseline + tau_max), new default", "#2a78d6"),
+                 "optimise": ("400 days, 80 frequencies", "#1baf7a")}
+
+
+def figure_frequency_grid(rows, figures: Path) -> None:
+    """rms error over seeds and cadences against SNR, per filter set, for
+    optimise() on each driver frequency grid."""
+    variants = [m for m in GRID_VARIANTS if any(r["method"] == m for r in rows)]
+    band_sets = [b for b in grid.BAND_SETS if any(r["band_set"] == b for r in rows)]
+    snrs = sorted({r["snr"] for r in rows})
+    fig, axes = plt.subplots(2, len(band_sets), figsize=(4.2 * len(band_sets), 7), sharey="row", squeeze=False)
+    for col, band_set in enumerate(band_sets):
+        for row_i, p in enumerate(PARAMS):
+            ax = axes[row_i, col]
+            for m in variants:
+                y = []
+                for snr in snrs:
+                    v = np.array([r[f"{p}_mean"] - r[f"{p}_truth"] for r in rows
+                                  if (r["method"], r["band_set"], r["snr"]) == (m, band_set, snr)])
+                    y.append(np.sqrt(np.mean(v ** 2)) if len(v) else np.nan)
+                ax.plot(snrs, y, color=GRID_VARIANTS[m][1], lw=2, marker="o", ms=6)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.grid(alpha=0.6, which="both")
+            if row_i == 0:
+                ax.set_title(band_set)
+            else:
+                ax.set_xlabel("signal-to-noise ratio per point")
+            if col == 0:
+                ax.set_ylabel(f"rms error of posterior mean,\n{PARAMS[p]}")
+    handles = [plt.Line2D([], [], color=GRID_VARIANTS[m][1], lw=2, marker="o", label=GRID_VARIANTS[m][0])
+               for m in variants]
+    fig.legend(handles=handles, loc="lower center", ncol=len(handles), frameon=False)
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
+    fig.savefig(figures / "frequency_grid.png", dpi=150)
+    plt.close(fig)
+
+
 def figure_timing(rows, figures: Path) -> None:
     fig, ax = plt.subplots(figsize=(6, 4))
     for method, style in METHOD_STYLE.items():
@@ -219,8 +258,9 @@ def figure_timing(rows, figures: Path) -> None:
 
 
 def aggregates(rows) -> dict:
-    out = {"n_fits": {m: sum(r["method"] == m for r in rows) for m in METHOD_STYLE}}
-    for method in METHOD_STYLE:
+    methods = sorted({r["method"] for r in rows})
+    out = {"n_fits": {m: sum(r["method"] == m for r in rows) for m in methods}}
+    for method in methods:
         mr = [r for r in rows if r["method"] == method]
         for p in PARAMS:
             z = np.array([r[f"{p}_z"] for r in mr])
@@ -297,6 +337,7 @@ def main() -> None:
     figure_calibration(rows, args.figures)
     if paired(rows):
         figure_optimise_vs_nuts(rows, args.figures)
+    figure_frequency_grid(rows, args.figures)
     figure_timing(rows, args.figures)
     print(f"{len(rows)} fits; figures in {args.figures}")
 

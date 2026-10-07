@@ -41,6 +41,10 @@ from . import run_manager
 
 _UNSET = object()
 
+# build_grid()'s default longest driver period, as a multiple of the window the
+# driver must cover (baseline + tau_max); see its period_max docstring.
+PERIOD_MAX_FACTOR = 2.0
+
 
 # optimise()'s multi-start check: a restart "agrees" with the best optimum if
 # every parameter lands within this many Laplace posterior standard deviations
@@ -398,14 +402,17 @@ class EchoFit:
             can be noisy for sparse or highly irregular sampling.
         period_max : float, optional
             Longest driver period (days); sets the frequency grid's lower
-            bound ``w_min = 2 pi / period_max``. Defaults to the time
-            baseline. A red-noise driver (a random walk especially) has
-            strong trends on longer timescales than the campaign, which a
-            baseline-length longest period cannot represent; on synthetic
+            bound ``w_min = 2 pi / period_max``. Defaults to twice the
+            window the driver must cover, ``2 (baseline + tau_max)``: the
+            echo at the first observation depends on the driver up to
+            ``tau_max`` earlier. A red-noise driver (a random walk
+            especially) has strong trends on timescales longer than the
+            campaign, and a longest period of only the baseline (the
+            default until October 2026) cannot represent them: on synthetic
             random-walk data the fit then biased ``log_mdot`` and
             ``inclination`` high, absorbing the trends into long responses
-            (``scripts/synthetic_recovery_grid.py``). A few times the
-            baseline plus ``tau_max`` removed the bias there.
+            (``scripts/synthetic_recovery_grid.py``). The fit at the truth
+            improved up to about twice the window and was flat beyond it.
         """
         if not self.bands:
             raise ValueError("Add at least one light curve before build_grid().")
@@ -418,12 +425,14 @@ class EchoFit:
         if dt_min is None:
             dt_min = estimate_dt_min(all_t_arrays, t_span=t_span)
 
-        w_min = 2.0 * np.pi / (t_span if period_max is None else period_max)
+        if tau_max is None:
+            tau_max = 0.5 * t_span
+        if period_max is None:
+            period_max = PERIOD_MAX_FACTOR * (t_span + tau_max)
+        w_min = 2.0 * np.pi / period_max
         w_max = np.pi / dt_min
         self.freqs = jnp.asarray(np.geomspace(w_min, w_max, n_freq))
 
-        if tau_max is None:
-            tau_max = 0.5 * t_span
         self.tau_grid = jnp.asarray(graded_tau_grid(tau_max, n_tau, power=tau_grid_power))
         for message in check_tau_grid_resolution(self.tau_grid, self.bands, self.M_BH):
             warnings.warn(f"build_grid(): {message}")

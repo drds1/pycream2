@@ -174,7 +174,7 @@ def test_rimmed_disc_recovery_and_flat_disc_bias(monkeypatch):
         ef = EchoFit(M_BH=M_BH)
         for name, d in data["bands"].items():
             ef.add_lightcurve(name, d["wavelength"], d["t"], d["y"], d["yerr"])
-        ef.build_grid(tau_max=30.0)
+        ef.build_grid(tau_max=30.0, period_max=2 * np.pi / float(data["freqs"].min()))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ef.optimise(num_samples=200, num_restarts=1)

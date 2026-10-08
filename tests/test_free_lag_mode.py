@@ -96,7 +96,7 @@ def test_free_lag_recovery_with_driver_anchor():
     # tau_max must match the synthetic generator's (60.0) -- build_grid()'s
     # own default (half the observed baseline) would otherwise give a much
     # wider, weaker Uniform(0, tau_max) prior on each tau_{band} than intended.
-    ef.build_grid(n_freq=15, n_tau=150, tau_max=60.0)
+    ef.build_grid(n_freq=15, n_tau=150, tau_max=60.0, period_max=2 * np.pi / float(data["freqs"].min()))
 
     # 1000 warmup steps, not 400: with the Filon transfer coefficients
     # (forward_model._filon_weights, CLAUDE.md decision #22) one of the 4

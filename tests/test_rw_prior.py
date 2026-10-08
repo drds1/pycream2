@@ -103,7 +103,7 @@ def test_rw_prior_recovers_log_mdot_on_synthetic_data():
     ef = EchoFit(M_BH=data["truth"]["M_BH"])  # drw_prior=False default
     for name, d in data["bands"].items():
         ef.add_lightcurve(name, wavelength=d["wavelength"], t=d["t"], y=d["y"], yerr=d["yerr"])
-    ef.build_grid(n_freq=15, n_tau=100)
+    ef.build_grid(n_freq=15, n_tau=100, period_max=2 * np.pi / float(data["freqs"].min()))
     # 1000 warmup steps, not 500: with log_mdot's prior widened from N(0, 1) to
     # N(0, 5**2) (model.LOG_MDOT_PRIOR_SD) 500 left 6% of transitions divergent.
     ef.fit(rng_seed=0, num_warmup=1000, num_samples=500, num_chains=1, progress_bar=False)

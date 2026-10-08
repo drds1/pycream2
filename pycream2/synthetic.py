@@ -137,7 +137,10 @@ def generate_synthetic_dataset(
     -------
     data : dict
         ``{"bands": {name: {"t", "y", "yerr", "wavelength"}}, "truth": {...},
-        "freqs": array, "tau_grid": array}``. With ``diffuse_continuum`` or
+        "freqs": array, "tau_grid": array}``. The driver's longest period is
+        ``t_span``, shorter than ``EchoFit.build_grid()``'s default
+        (``2 (baseline + tau_max)``); to fit on the truth's own basis, pass
+        ``period_max=2 * np.pi / data["freqs"].min()``. With ``diffuse_continuum`` or
         ``background``, each band's truth also has ``"diffuse_continuum"``
         and/or ``"background"`` (its coefficients) and ``"background_curve"``
         (at the band's observation times).

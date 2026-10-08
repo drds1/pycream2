@@ -270,18 +270,27 @@ during the run. Use it for anything long enough that losing it would hurt.
 
 ## 5. Grid settings (`build_grid`)
 
-### Frequency grid: `n_freq` (60) and `dt_min`
+### Frequency grid: `n_freq` (60), `period_max` and `dt_min`
 
-The driver is a sum of $n_f$ sinusoids on a log-spaced grid from the
-longest period the baseline $T$ can show to the shortest the cadence can
-resolve:
+The driver is a sum of $n_f$ sinusoids on a log-spaced grid from a longest
+period $P_\text{max}$ to the shortest period the cadence can resolve:
 
 ```math
-\omega_\text{min} = \frac{2\pi}{T}, \qquad \omega_\text{max} = \frac{\pi}{\Delta t_\text{min}},
+\omega_\text{min} = \frac{2\pi}{P_\text{max}}, \qquad P_\text{max} = 2\,(T + \tau_\text{max}), \qquad \omega_\text{max} = \frac{\pi}{\Delta t_\text{min}},
 ```
 
-a Nyquist-style limit, with $\Delta t_\text{min}$ taken as the 5th
-percentile of the observation gaps (robust to a few close pairs). Each
+with $T$ the baseline. $T + \tau_\text{max}$ is the window the driver must
+cover (the echo at the first observation depends on the driver up to
+$\tau_\text{max}$ earlier), and the factor of 2 lets the series represent
+trends longer than that window, which a red-noise driver always has. Until
+October 2026 the longest period was $T$ itself; on synthetic random-walk
+data that biased `log_mdot` and the inclination high, the fit absorbing the
+trends into long responses (`scripts/synthetic_recovery_grid.py`). The fit
+at the truth improved up to $P_\text{max} \approx 2(T + \tau_\text{max})$
+and was flat beyond it. Pass `period_max` to set it directly.
+$\omega_\text{max}$ is a Nyquist-style limit, with $\Delta t_\text{min}$
+taken as the 5th percentile of the observation gaps (robust to a few close
+pairs). Each
 frequency adds two parameters. More frequencies give a more flexible
 driver, but also more parameters for `.fit()` and a larger linear solve for
 `.optimise()`. 60 suits campaigns of a few hundred days. Use fewer (15 to

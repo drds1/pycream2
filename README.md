@@ -246,7 +246,7 @@ if you want the model structure on but one part pinned.
 ## 🧭 Choosing settings: the fitting guide
 
 The model above comes with a fair number of choices: how to solve it
-(full MCMC with `.fit()`, or the much quicker `.optimise()` direct solve),
+(full MCMC with `.fit()`, or the much quicker `.nested_laplace()` and `.optimise()` direct solves),
 the sampler's settings, how finely to grid frequencies and lags, which
 driver prior, and which bands get physical or free lags. Every one has a
 sensible default, so a plain `ef.build_grid(); ef.fit()` works out of the
@@ -489,10 +489,21 @@ default, and when to change it.
 ### ⚡ Direct solve, no MCMC
 
 ```python
-ef.optimise()                          # L-BFGS + Laplace posterior, no MCMC
+ef.nested_laplace()                    # grid + Laplace + importance weights, no MCMC
+print(ef.nested_laplace_result["k_hat"])  # below 0.7: the draws are reliable
+ef.optimise()                          # quicker: L-BFGS + a single Gaussian
 ef.plot_lightcurve_fits()              # every plot works on the result, as after .fit()
 ef.fit(init_from_optimum=True)         # optional: full NUTS, started at the optimum
 ```
+
+`nested_laplace()` grids `log_mdot` and inclination, integrates everything
+else (exactly for the linear parameters, by a Laplace approximation for the
+rest), and importance-weights its draws against the exact posterior, so it
+follows a curved ridge or a second mode where `optimise()`'s single Gaussian
+cannot. On synthetic g and i light curves at SNR 100, where the posterior
+has two modes, it matched nested sampling (log_mdot 2.63 ± 1.24 against
+2.59 ± 1.24) at about 1.7 times `optimise()`'s cost, where `optimise()` gave
+1.99 ± 0.20. See [`docs/nested_laplace.md`](docs/nested_laplace.md).
 
 With the nonlinear parameters (`log_mdot`, inclination, band gains,
 `sigma_drw`, ...) held fixed, every predicted light curve is *linear* in the

@@ -29,7 +29,7 @@ for name, wav, t, y, yerr in my_bands:
     ef.add_lightcurve(name, wavelength=wav, t=t, y=y, yerr=yerr)
 ef.build_grid()                               # watch for resolution warnings
 
-ef.optimise()                                 # fast first look, no MCMC
+ef.nested_laplace()                           # fast, no MCMC; check ef.nested_laplace_result["k_hat"] < 0.7
 ef.plot_lightcurve_fits()
 
 ef.fit()                                      # the full posterior (NUTS, dense mass)
@@ -37,23 +37,24 @@ print(ef.extra_fields["diverging"].sum(), "divergences")
 ```
 
 Every default is the fastest *correct* choice for full MCMC that has been
-measured. The one deliberate exception: `.fit()` runs MCMC rather than the
-faster `.optimise()`, because MCMC is exact and `.optimise()` is an
-approximation (section 3). Use `.optimise()` for speed, and `.fit()` when
-the answer matters.
+measured. `.nested_laplace()` is the fast direct solve to reach for first: it
+follows a curved ridge or a second mode in `log_mdot` and inclination, and its
+importance-sampling check (`k_hat`) says when to trust it (section 3,
+[nested_laplace.md](nested_laplace.md)). `.optimise()` is faster still but
+fits a single Gaussian, which understates the uncertainty several-fold when
+the data constrain the disc weakly. `.fit()` (NUTS) remains the tool for
+`lag_mode="free"` bands.
 
 ### Which solver?
 
 ```mermaid
 flowchart TD
-    A[Registered light curves, build_grid done] --> B{Any lag_mode='free' band,<br/>or a posterior that may be multimodal?}
+    A[Registered light curves, build_grid done] --> B{Any lag_mode='free' band?}
     B -- yes --> C[".fit(num_chains=4, chain_method='vectorized')<br/>and check R-hat"]
-    B -- no --> D{Need a quick look,<br/>or many fits?}
-    D -- yes --> E[".optimise()"]
-    E --> F{Parameter pressed against a prior bound,<br/>e.g. inclination near 80°? Or the answer matters?}
-    F -- yes --> G[".fit(init_from_optimum=True)"]
-    F -- no --> H[Done]
-    D -- no --> I[".fit()"]
+    B -- no --> D[".nested_laplace()"]
+    D --> F{k_hat < 0.7 and no<br/>grid-edge warning?}
+    F -- yes --> H[Done]
+    F -- no --> G[".fit()"]
 ```
 
 ---
@@ -76,7 +77,7 @@ flowchart TD
 | `tau_max` | `build_grid` | half the baseline | lags are known to be much shorter (sharper grid) | 5 |
 | `tau_grid_power` | `build_grid` | 3.0 | a resolution warning for short-wavelength bands | 5 |
 | `dt_min` | `build_grid` | 5th-percentile gap | very irregular cadence makes the estimate noisy | 5 |
-| solver | method call | `.fit()` (NUTS) | `.optimise()` for speed (section 3) | 3 |
+| solver | method call | `.fit()` (NUTS) | `.nested_laplace()` for speed without a single-Gaussian approximation; `.optimise()` for a quick look (section 3) | 3 |
 | `num_warmup`, `num_samples` | `fit` | 1000, 1000 | divergences (more warmup); smoother histograms (more samples) | 4 |
 | `dense_mass` | `fit` | `True` | only a tiny warmup (it can't adapt) | 4 |
 | `num_chains`, `chain_method` | `fit` | 1, `"parallel"` | free-lag bands or any doubt about convergence: 4 chains | 4 |
@@ -89,10 +90,13 @@ flowchart TD
 
 ## 3. Choosing the solver
 
-### The three options
+### The four options
 
 1. **`.fit()`: NUTS on every parameter** (the default). Samples the exact
-   posterior. It is the reference every other option is checked against.
+   posterior, given enough samples. On weakly constraining data, where the
+   posterior of `log_mdot` and inclination has two modes, a chain may cross
+   between them rarely or never, so it cannot weigh them: check several
+   chains' R-hat.
 2. **`.optimise()`: direct solve, no MCMC.** Integrates the ~125 linear
    parameters (driver Fourier coefficients, band offsets) out *exactly*,
    finds the peak of what remains (about 8 nonlinear parameters) with
@@ -102,7 +106,18 @@ flowchart TD
 3. **`EchoFit(marginalise_linear=True)` + `.fit()`: NUTS on the marginalised
    model.** Exact, samples ~8 parameters, but each step costs ~21× more (a
    QR factorisation), so on the benchmark it is about 2× *less* efficient
-   than option 1. Keep it for experiments.
+   than option 1. On the thin-disc response, though, the sampled model's
+   warmup stalled (step size ~1e-5, every iteration at 1023 steps) where this
+   one took ~7 steps per sample.
+4. **`.nested_laplace()`: a nested Laplace approximation, no MCMC.** Grids
+   `log_mdot` and inclination (and `temperature_slope` if fitted), integrates
+   the other nonlinear parameters by a Laplace approximation at every grid
+   point and the linear ones exactly, then importance-weights its draws
+   against the exact posterior (PSIS, with the `k_hat` diagnostic). It follows
+   ridges and multiple modes, and matched nested sampling on the synthetic
+   case where `optimise()` was six times too narrow, at under twice
+   `optimise()`'s cost. Full description and validation:
+   [nested_laplace.md](nested_laplace.md).
 
 ### Why the linear parameters can be integrated out
 
@@ -172,7 +187,7 @@ standard deviations apart all finished within 0.06 of the best; with the
 skew-normal response only 3 of 8 agreed, exposing a flat inclination
 direction that a single Laplace solve reports far too narrowly.
 
-In those cases, run `.fit()`. `.fit(init_from_optimum=True)` starts NUTS at
+In those cases, run `.nested_laplace()`, or `.fit()`. `.fit(init_from_optimum=True)` starts NUTS at
 `.optimise()`'s peak (single chain only, since identical starts would
 defeat multi-chain convergence checks). It should shorten the warmup
 needed, but that hasn't been benchmarked yet, so keep `num_warmup` at its

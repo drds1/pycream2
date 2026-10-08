@@ -46,6 +46,7 @@ nav:
   - Under the hood:
       - How the MCMC works: mcmc_implementation.md
       - Performance and the direct solve: performance_improvements.md
+      - "Nested Laplace: fast posteriors with ridges and modes": nested_laplace.md
   - API reference: api.md
   - Development:
       - Releasing: releasing.md

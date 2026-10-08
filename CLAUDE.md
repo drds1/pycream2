@@ -1108,6 +1108,43 @@ match; `pycream2.__version__` reads the installed metadata);
     difference). `synthetic.generate_synthetic_dataset` draws its truth on a baseline-length Fourier grid, so
     the existing recovery tests could never have caught this. Every earlier fit used the old grid.
 
+28. **`EchoFit.nested_laplace()` (`pycream2/nested_laplace.py`): a nested Laplace approximation with an
+    importance-sampling correction, the fast solve that survives ridges and multiple modes (October 2026, a
+    direct request: "I want the speed but not compromise the accuracy"; literature search first, then INLA
+    chosen; full write-up `docs/nested_laplace.md`, validation `scripts/validate_nested_laplace.py`).**
+    `optimise()`'s single Gaussian failed on the synthetic recovery grid's g+i SNR 100 cases: seed 1 has two
+    modes (optimise 1.99 +/- 0.20, all restarts agreeing, true posterior 2.59 +/- 1.24 by nested sampling),
+    seed 2 a long ridge (optimise 4.21 +/- 0.50 with restarts disagreeing). A single NUTS chain was no
+    reference either: it crossed between seed 1's modes once (split R-hat 2.1).
+    - **Design.** Grid the few awkward "outer" parameters (`log_mdot`, `cos_inclination`, `temperature_slope`
+      when fitted) in constrained coordinates; at each point optimise the ~3-8 inner ones and Laplace-integrate
+      them (the linear ones are already exact); weight draws against the exact potential with PSIS (IS-INLA,
+      Berild et al. 2022). The potential is a function of NumPyro's flat unconstrained vector, so the split is
+      just index slicing: one compile, no `fixed_params` recompiles, prior and Jacobian terms already inside.
+    - **Dead ends worth knowing, each measured:** batching grid points with `vmap` gives nothing on CPU (same
+      ms per point at batch 1, 8, 32). A grid that only grows outwards while its edges hold mass never crosses
+      a deep trough to a second mode (the bimodal toy), hence the scout pass over +/-3.3 prior sd. A zoom that
+      trusts the scout grid's *values* lost a 0.01-dex mode at SNR 1000 between scout points and settled
+      confidently (k_hat 0.07) on a wrong, broader mode (log_mdot 4.91 +/- 0.02, true 1.95): hence full
+      optimisations seeded from every scout local maximum and the data-anchored start, with modes weighed by
+      Laplace evidence. A Gaussian inner proposal gave k_hat 0.84 on a toy with a skewed noise scale: Student-t
+      (6 dof) fixed it (0.48). A product grid can't resolve modes of very different widths: a fraction of draws
+      (`mode_fraction`, 0.2) comes from a Student-t at each mode, weighted against the whole mixture (defensive
+      importance sampling, Hesterberg 1995). Uniform draws within coarse cells gave k_hat 0.84 on the ridge:
+      the cell is chosen from the log density interpolated onto a 4x finer mesh. `k_hat` cannot flag a mode
+      no draw came near; `edge_drop` flags mass at a grid edge.
+    - **Cost.** 1.4-1.8x `optimise()`'s wall time on the four synthetic cases timed (167-444 s on a laptop;
+      nautilus took 1871-2610 s on the two it was run on). Accuracy-neutral speed-ups measured along the way:
+      the final grid sized at `drop = 8` rather than 12 (a broad e^-10 plateau at log_mdot ~10-15 had stretched
+      it to ~1 dex per row), inner solves at non-exact points converged to 0.05 rather than 0.01 inner sd, and
+      a 20 x 15 rather than 24 x 18 final grid: together ugriz/500 points went from 1327 s to 444 s. One
+      gradient of the marginalised potential is ~37 ms on 2 bands x 100 points (laptop CPU), ~90
+      ms on 5 x 100; an inner Hessian costs d_inner forward passes of the gradient (`_Problem.inner_hessian`,
+      not `jax.hessian` of the full vector). The exact linear draws after either direct solve
+      (`_add_linear_draws`) are 60 s (2 x 100) to 150 s (5 x 100) of the total and the next thing to speed up.
+    - Validated against nautilus nested sampling (`poetry install --with validation`, an optional group used
+      only by the validation script) and on exact toy posteriors (`tests/test_nested_laplace.py`).
+
 ## Known rough edges / things to check before trusting results on real data
 
 - `synthetic.py`'s ground truth is generated with the *same* forward model

@@ -239,7 +239,7 @@ def laplace_run(data, n):
     the process, so including JIT compilation), with its own stage timings."""
     ef = _make_echofit(data)
     t0 = time.perf_counter()
-    ef.optimise(num_samples=n)
+    ef.optimise(num_samples=n, method="laplace")
     total = time.perf_counter() - t0
     return dict(
         seconds_total=total, **ef.optimise_timings,

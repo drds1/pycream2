@@ -29,7 +29,8 @@ for name, wav, t, y, yerr in my_bands:
     ef.add_lightcurve(name, wavelength=wav, t=t, y=y, yerr=yerr)
 ef.build_grid()                               # watch for resolution warnings
 
-ef.optimise()                                 # fast first look, no MCMC
+ef.optimise()                                 # fast, no MCMC (nested Laplace); check ef.nested_laplace_result["k_hat"] < 0.7
+ef.plot_landscape()                           # Badness-of-Fit map of log_mdot against inclination
 ef.plot_lightcurve_fits()
 
 ef.fit()                                      # the full posterior (NUTS, dense mass)
@@ -37,23 +38,25 @@ print(ef.extra_fields["diverging"].sum(), "divergences")
 ```
 
 Every default is the fastest *correct* choice for full MCMC that has been
-measured. The one deliberate exception: `.fit()` runs MCMC rather than the
-faster `.optimise()`, because MCMC is exact and `.optimise()` is an
-approximation (section 3). Use `.optimise()` for speed, and `.fit()` when
-the answer matters.
+measured. `.optimise()` is the fast direct solve to reach for first: by
+default a nested Laplace approximation, which follows a curved valley or a
+second mode in `log_mdot` and inclination, with an importance-sampling check
+(`k_hat`) that says when to trust it (section 3,
+[nested_laplace.md](nested_laplace.md)). `.optimise(method="laplace")` is
+faster still but fits a single Gaussian, which understates the uncertainty
+several-fold when the data constrain the disc weakly. `.fit()` (NUTS) remains
+the tool for `lag_mode="free"` bands.
 
 ### Which solver?
 
 ```mermaid
 flowchart TD
-    A[Registered light curves, build_grid done] --> B{Any lag_mode='free' band,<br/>or a posterior that may be multimodal?}
+    A[Registered light curves, build_grid done] --> B{Any lag_mode='free' band?}
     B -- yes --> C[".fit(num_chains=4, chain_method='vectorized')<br/>and check R-hat"]
-    B -- no --> D{Need a quick look,<br/>or many fits?}
-    D -- yes --> E[".optimise()"]
-    E --> F{Parameter pressed against a prior bound,<br/>e.g. inclination near 80°? Or the answer matters?}
-    F -- yes --> G[".fit(init_from_optimum=True)"]
-    F -- no --> H[Done]
-    D -- no --> I[".fit()"]
+    B -- no --> D[".optimise()"]
+    D --> F{k_hat < 0.7 and no<br/>grid-edge warning?}
+    F -- yes --> H[Done]
+    F -- no --> G[".fit()"]
 ```
 
 ---
@@ -76,7 +79,8 @@ flowchart TD
 | `tau_max` | `build_grid` | half the baseline | lags are known to be much shorter (sharper grid) | 5 |
 | `tau_grid_power` | `build_grid` | 3.0 | a resolution warning for short-wavelength bands | 5 |
 | `dt_min` | `build_grid` | 5th-percentile gap | very irregular cadence makes the estimate noisy | 5 |
-| solver | method call | `.fit()` (NUTS) | `.optimise()` for speed (section 3) | 3 |
+| solver | method call | `.fit()` (NUTS) | `.optimise()` (nested Laplace) for speed; `.optimise(method="laplace")` for a quicker look when the data clearly constrain the disc (section 3) | 3 |
+| `method` | `optimise` | `"nested_laplace"` | `"laplace"`: the single-Gaussian solve, with its multi-start check | 3 |
 | `num_warmup`, `num_samples` | `fit` | 1000, 1000 | divergences (more warmup); smoother histograms (more samples) | 4 |
 | `dense_mass` | `fit` | `True` | only a tiny warmup (it can't adapt) | 4 |
 | `num_chains`, `chain_method` | `fit` | 1, `"parallel"` | free-lag bands or any doubt about convergence: 4 chains | 4 |
@@ -89,11 +93,15 @@ flowchart TD
 
 ## 3. Choosing the solver
 
-### The three options
+### The four options
 
 1. **`.fit()`: NUTS on every parameter** (the default). Samples the exact
-   posterior. It is the reference every other option is checked against.
-2. **`.optimise()`: direct solve, no MCMC.** Integrates the ~125 linear
+   posterior, given enough samples. On weakly constraining data, where the
+   posterior of `log_mdot` and inclination has two modes, a chain may cross
+   between them rarely or never, so it cannot weigh them: check several
+   chains' R-hat.
+2. **`.optimise(method="laplace")`: single-Gaussian direct solve, no MCMC**
+   (the default `optimise()` until October 2026). Integrates the ~125 linear
    parameters (driver Fourier coefficients, band offsets) out *exactly*,
    finds the peak of what remains (about 8 nonlinear parameters) with
    L-BFGS, and approximates the posterior there as a Gaussian from the
@@ -102,7 +110,19 @@ flowchart TD
 3. **`EchoFit(marginalise_linear=True)` + `.fit()`: NUTS on the marginalised
    model.** Exact, samples ~8 parameters, but each step costs ~21× more (a
    QR factorisation), so on the benchmark it is about 2× *less* efficient
-   than option 1. Keep it for experiments.
+   than option 1. On the thin-disc response, though, the sampled model's
+   warmup stalled (step size ~1e-5, every iteration at 1023 steps) where this
+   one took ~7 steps per sample.
+4. **`.optimise()`, the default direct solve: a nested Laplace
+   approximation, no MCMC** (also `.nested_laplace()`). Grids
+   `log_mdot` and inclination (and `temperature_slope` if fitted), integrates
+   the other nonlinear parameters by a Laplace approximation at every grid
+   point and the linear ones exactly, then importance-weights its draws
+   against the exact posterior (PSIS, with the `k_hat` diagnostic). It follows
+   ridges and multiple modes, and matched nested sampling on the synthetic
+   case where the single-Gaussian solve was six times too narrow, at under
+   twice its cost. Full description and validation:
+   [nested_laplace.md](nested_laplace.md).
 
 ### Why the linear parameters can be integrated out
 
@@ -119,7 +139,7 @@ so exactly, with no approximation,
 p(y \mid z) = \mathcal N\big(y;\; 0,\; D + M M^\top\big), \qquad p(\theta \mid y, z) = \mathcal N\big(\hat\theta,\; P^{-1}\big),\quad P = I + M^\top D^{-1} M.
 ```
 
-The only approximation in `.optimise()` is the next step,
+The only approximation in `.optimise(method="laplace")` is the next step,
 
 ```math
 p(z \mid y) \approx \mathcal N\big(z^\star,\; H^{-1}\big), \qquad z^\star = \arg\max_z p(z \mid y), \qquad H = -\nabla^2 \log p(z \mid y)\big|_{z^\star},
@@ -133,26 +153,26 @@ logits of bounded ones). Full derivation:
 
 ![Time to a posterior for each solver](images/perf/time_to_posterior.png)
 
-| | `.fit()` (dense NUTS, 500 + 500) | `.optimise()` |
+| | `.fit()` (dense NUTS, 500 + 500) | `.optimise(method="laplace")` |
 |---|---|---|
 | Wall time, including compilation | 56 s | 27 s |
 | `log_mdot` | 0.193 ± 0.011 | 0.194 ± 0.012 |
 | inclination (°) | 59.0 ± 13.5 | 55.3 ± 14.0 |
 | Exact? | yes, given enough samples | Gaussian approximation in $z$ |
 
-`.optimise()`'s cost is mostly fixed (compilation, the Hessian, the draws),
+The single-Gaussian solve's cost is mostly fixed (compilation, the Hessian, the draws),
 so its advantage grows with longer NUTS runs.
 
 ![Posterior agreement across solvers](images/perf/posterior_agreement.png)
 
-**When `.optimise()` is not enough.** The Laplace approximation is exact
+**When the single-Gaussian solve is not enough.** The Laplace approximation is exact
 for a Gaussian posterior and good near one. It fails when:
 
 - **a parameter presses against a prior bound.** In the figure, the true
   inclination posterior piles up against its 80° bound; the Gaussian
   (in logit space) rolls off instead;
 - **the posterior is multimodal**, as free-lag bands can be (section 7);
-- **the peak isn't converged.** `.optimise()` follows L-BFGS with Newton
+- **the peak isn't converged.** `.optimise(method="laplace")` follows L-BFGS with Newton
   steps (exact Hessian, line-searched, accepted only if the posterior
   improves) until one more step would move the peak by under 0.01 posterior
   standard deviations. It reports the final figure as
@@ -172,8 +192,9 @@ standard deviations apart all finished within 0.06 of the best; with the
 skew-normal response only 3 of 8 agreed, exposing a flat inclination
 direction that a single Laplace solve reports far too narrowly.
 
-In those cases, run `.fit()`. `.fit(init_from_optimum=True)` starts NUTS at
-`.optimise()`'s peak (single chain only, since identical starts would
+In those cases, run the default `.optimise()` (nested Laplace), or `.fit()`.
+`.fit(init_from_optimum=True)` starts NUTS at `.optimise()`'s peak (the best
+mode's, after the nested solve) (single chain only, since identical starts would
 defeat multi-chain convergence checks). It should shorten the warmup
 needed, but that hasn't been benchmarked yet, so keep `num_warmup` at its
 default.
@@ -358,7 +379,8 @@ fit needs a driver light curve** (`add_driver_lightcurve`), which pins the
 origin; `.fit()` warns if one is missing. Even then, a broad lag prior can
 leave the posterior **multimodal**: 1 of 3 single-chain test runs converged
 confidently to lags 3 to 4 times too long. For free-lag fits, use
-`num_chains=4` and check $\hat R$, and don't rely on `.optimise()`.
+`num_chains=4` and check $\hat R$, and don't rely on `.optimise()` (it can't
+grid a lag per band).
 
 ### `fit_error_model` (default `False`)
 
@@ -384,14 +406,15 @@ flux, the thin-disk model cannot reach the quoted-error noise floor:
 | divergences | 86 / 300 | 2 / 300 |
 | median leapfrog steps per sample | 1023 (the ceiling) | 511 |
 | minimum ESS | 4 | 32 |
-| `.optimise()` | non-positive-definite Hessian, failed | converged (offset 0.00 sd) |
+| `.optimise(method="laplace")` | non-positive-definite Hessian, failed | converged (offset 0.00 sd) |
 
 The fitted terms inflate the far-UV errors about 3 times and add jitter of
 1 to 3 times the quoted error to every band. Point-to-point scatter within a
 night is *consistent* with the quoted errors, so the errors are not wrong
 as photometry; the extra variance is model mismatch (and inter-telescope
-calibration) on longer timescales. Without the error model, `.optimise()`
-already fails from 7 bands onwards. `scripts/fit_lightcurves.py
+calibration) on longer timescales. Without the error model, the
+single-Gaussian solve already fails from 7 bands onwards (measured before the
+nested solve existed). `scripts/fit_lightcurves.py
 --fit-error-model` turns it on for every band.
 
 ### `diffuse_continuum` (default `False`) and `background_order` (default `0`)
@@ -482,12 +505,18 @@ After `.fit()`:
   structure, and no flat-line predictions (a sign of an under-resolved lag
   grid, section 5).
 
-After `.optimise()`:
+After `.optimise()` (nested Laplace):
+
+- `ef.nested_laplace_result["k_hat"]` below 0.7, and no grid-edge warning (it
+  warns otherwise).
+- `ef.plot_landscape()`: one basin or several, and how far a valley runs.
+
+After `.optimise(method="laplace")`:
 
 - `ef.optimise_timings["newton_offset_in_sd"]` below ~0.25 (it warns
   otherwise).
 - No parameter piled against a prior bound in `ef.plot_corner()`. If there
-  is one, confirm with `.fit()`.
+  is one, confirm with `.fit()` or the nested solve.
 
 ---
 

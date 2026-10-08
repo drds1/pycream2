@@ -155,7 +155,7 @@ def synthetic_fits():
         t0 = time.time()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ef.optimise(num_samples=300, num_restarts=2)
+            ef.optimise(num_samples=300, num_restarts=2, method="laplace")
         s = ef.samples
         params = {k: [float(np.median(s[k])), float(np.std(s[k]))]
                   for k in ("log_mdot", "inclination", "temperature_slope") if k in s}

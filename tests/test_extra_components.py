@@ -196,7 +196,7 @@ def test_optimise_recovers_injected_diffuse_continuum_and_backgrounds():
     ef.build_grid(tau_max=60, period_max=2 * np.pi / float(data["freqs"].min()))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ef.optimise(num_samples=300, num_restarts=2)
+        ef.optimise(num_samples=300, num_restarts=2, method="laplace")
     assert ef.optimise_timings["restarts_agreeing"] == 2
     # The Laplace evidence prefers the components that are really there.
     with_components = ef.log_evidence
@@ -206,7 +206,7 @@ def test_optimise_recovers_injected_diffuse_continuum_and_backgrounds():
     plain.build_grid(tau_max=60, period_max=2 * np.pi / float(data["freqs"].min()))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        plain.optimise(num_samples=50, num_restarts=1)
+        plain.optimise(num_samples=50, num_restarts=1, method="laplace")
     assert with_components > plain.log_evidence + 10
     s = ef.samples
     assert abs(np.mean(s["log_mdot"]) - 0.3) < 0.1

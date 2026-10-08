@@ -33,7 +33,7 @@ def main():
     ef.build_grid(tau_max=60)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ef.optimise(num_samples=500, num_restarts=2)
+        ef.optimise(num_samples=500, num_restarts=2, method="laplace")
     s, truth = ef.disc_sed["summary"], data["truth"]["disc_sed"]
     print(f"D_L {s['dl_mpc'][1]:.1f} (+{s['dl_mpc'][2] - s['dl_mpc'][1]:.1f}/-{s['dl_mpc'][1] - s['dl_mpc'][0]:.1f}) "
           f"Mpc, truth {truth['dl_mpc']:.1f}")

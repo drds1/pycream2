@@ -189,7 +189,7 @@ def test_runs_after_optimise_and_appears_in_the_report(tmp_path):
     ef = _small_fit()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ef.optimise(num_samples=60, num_restarts=1)
+        ef.optimise(num_samples=60, num_restarts=1, method="laplace")
     assert ef.disc_sed is not None
     assert np.isfinite(ef.disc_sed["summary"]["dl_mpc"][1])
     html = reporting.generate_report(ef, tmp_path).read_text()
@@ -199,7 +199,7 @@ def test_runs_after_optimise_and_appears_in_the_report(tmp_path):
 def test_a_failure_only_warns_and_keeps_the_fit():
     ef = _small_fit(sed_options={"host_band": "no_such_band"})
     with pytest.warns(UserWarning, match="disc SED analysis failed"):
-        ef.optimise(num_samples=20, num_restarts=1)
+        ef.optimise(num_samples=20, num_restarts=1, method="laplace")
     assert ef.samples is not None and ef.disc_sed is None
 
 

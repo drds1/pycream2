@@ -133,6 +133,15 @@ def generate_report(
         fig_restarts.savefig(paths["restarts"], dpi=150, bbox_inches="tight")
         figs_to_close.append(fig_restarts)
 
+    # Only after EchoFit.nested_laplace() with log_mdot and inclination gridded,
+    # and no sampler run since.
+    nl = getattr(ef, "nested_laplace_result", None)
+    if nl and list(nl["names"])[:2] == ["log_mdot", "cos_inclination"] and not ef.extra_fields:
+        fig_land, _ = ef.plot_landscape()
+        paths["landscape"] = out_dir / "landscape.png"
+        fig_land.savefig(paths["landscape"], dpi=150, bbox_inches="tight")
+        figs_to_close.append(fig_land)
+
     fig_fourier = ef.plot_fourier_correlation()[0]
     paths["fourier_correlation"] = out_dir / "fourier_correlation.png"
     fig_fourier.savefig(paths["fourier_correlation"], dpi=150, bbox_inches="tight")
@@ -339,6 +348,20 @@ sits in Badness of Fit (2 &times; potential).</p>
 <img src="{data_uris['restarts']}" alt="{paths['restarts'].name}">
 """
 
+    landscape_section = ""
+    if "landscape" in paths:
+        landscape_section = f"""
+<h2>Badness-of-Fit landscape (nested Laplace)</h2>
+<p>The marginal posterior of log_mdot and inclination from nested_laplace(),
+shown as &Delta;BOF = &minus;2 &Delta;log posterior: at every grid point the
+other parameters are optimised and integrated. Left, the scout grid over the
+prior range (every basin the search saw); right, the final grid, with
+contours enclosing 68, 95 and 99.7 per cent. Importance-sampling check:
+Pareto k&#770; = {ef.nested_laplace_result['k_hat']:.2f} (reliable below 0.7), effective
+sample size {ef.nested_laplace_result['ess']:.0f}.</p>
+<img src="{data_uris['landscape']}" alt="{paths['landscape'].name}">
+"""
+
     bof_section = ""
     if "bof" in paths:
         bof_section = f"""
@@ -368,7 +391,7 @@ code {{ background: #f2f2f2; padding: 1px 4px; }}
 
 <h2>Posterior summary</h2>
 {_summary_table_html(ef, truth)}
-{restarts_section}
+{restarts_section}{landscape_section}
 <h2>Raw light curves</h2>
 <img src="{data_uris['raw']}" alt="{paths['raw'].name}">
 

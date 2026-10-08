@@ -34,7 +34,7 @@ def _echofit(**kwargs):
 
 def test_temperature_slope_is_a_fitted_site(thin_disk):
     ef = _echofit()
-    ef.optimise(num_samples=20, num_restarts=1)
+    ef.optimise(num_samples=20, num_restarts=1, method="laplace")
     assert "temperature_slope" in ef.samples
     lo, hi = model_mod.TEMPERATURE_SLOPE_PRIOR
     assert np.all((ef.samples["temperature_slope"] > lo) & (ef.samples["temperature_slope"] < hi))
@@ -43,7 +43,7 @@ def test_temperature_slope_is_a_fitted_site(thin_disk):
 
 def test_temperature_slope_can_be_fixed(thin_disk):
     ef = _echofit(fixed_params={"temperature_slope": 1.0})
-    ef.optimise(num_samples=10, num_restarts=1)
+    ef.optimise(num_samples=10, num_restarts=1, method="laplace")
     assert np.allclose(ef.samples["temperature_slope"], 1.0)
 
 
@@ -51,7 +51,7 @@ def test_temperature_slope_needs_a_response_that_accepts_it():
     """The default skew-normal response has no viscous_slope argument."""
     ef = _echofit()
     with pytest.raises(ValueError, match="viscous_slope"):
-        ef.optimise(num_samples=10, num_restarts=1)
+        ef.optimise(num_samples=10, num_restarts=1, method="laplace")
 
 
 def test_temperature_slope_persists_across_resume(thin_disk, tmp_path):

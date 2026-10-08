@@ -163,11 +163,18 @@ def _parse_args():
     parser.add_argument(
         "--optimise", action="store_true",
         help=(
-            "Direct solve instead of MCMC: EchoFit.optimise() (L-BFGS on the "
-            "linear-marginalised posterior + a Laplace Gaussian around the peak), "
-            "about half a 500-sample NUTS run's time; see CLAUDE.md decision #21. Fine for a "
-            "single well-constrained peak; use MCMC for free-lag or multimodal fits. "
-            "Ignores the MCMC-only options and --title's checkpointing."
+            "Direct solve instead of MCMC: EchoFit.optimise(), by default the nested Laplace "
+            "approximation (a grid over log_mdot and inclination, the rest integrated, "
+            "importance-weighted; docs/nested_laplace.md), which follows ridges and second "
+            "modes. Use MCMC for free-lag bands. Ignores the MCMC-only options and "
+            "--title's checkpointing."
+        ),
+    )
+    parser.add_argument(
+        "--laplace", action="store_true",
+        help=(
+            "With --optimise: the original single-Gaussian solve (optimise(method='laplace'), "
+            "CLAUDE.md decision #21), faster but too narrow on weakly constraining data."
         ),
     )
     sed = parser.add_argument_group(
@@ -245,7 +252,8 @@ def main():
     ef.build_grid(**build_grid_kwargs)
 
     if args.optimise:
-        ef.optimise(num_samples=args.num_samples, rng_seed=args.rng_seed)
+        ef.optimise(num_samples=args.num_samples, rng_seed=args.rng_seed,
+                    method="laplace" if args.laplace else "nested_laplace")
         out_dir = Path(args.output_dir or "fit_output")
         report_path = reporting.generate_report(ef, out_dir, title=args.title)
         print(f"Done (direct solve) -> {report_path}")

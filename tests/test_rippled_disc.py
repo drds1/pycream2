@@ -177,7 +177,7 @@ def test_rimmed_disc_recovery_and_flat_disc_bias(monkeypatch):
         ef.build_grid(tau_max=30.0, period_max=2 * np.pi / float(data["freqs"].min()))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ef.optimise(num_samples=200, num_restarts=1)
+            ef.optimise(num_samples=200, num_restarts=1, method="laplace")
         return ef
 
     ef_rim, ef_flat = fit(rim), fit(thin_disk_response)

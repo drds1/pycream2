@@ -943,7 +943,8 @@ def plot_landscape(result: dict, truth: Optional[Dict[str, float]] = None, optim
     truth : dict, optional
         ``{"log_mdot": ..., "inclination": ...}`` to mark (synthetic data).
     optimum : dict, optional
-        ``ef.optimum`` from ``.optimise()``, marked for comparison.
+        The single-Gaussian solve's peak (``optimise(method="laplace")``),
+        marked for comparison.
     max_delta_bof : float
         Colour scale ceiling.
     """
@@ -966,7 +967,8 @@ def plot_landscape(result: dict, truth: Optional[Dict[str, float]] = None, optim
 
     panels = [(result["passes"][0]["axes"], as_2d(result["passes"][0]["logp"]), "Scout grid: the prior range"),
               (result["fine_axes"], as_2d(result["fine_logp"]), "Final grid: the posterior")]
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    # Constrained layout: room for both y labels and the shared colour bar.
+    fig, axes = plt.subplots(1, 2, figsize=figsize, layout="constrained")
     levels = [2.30, 6.18, 11.83]
     for ax, (grid_axes, logp, title) in zip(axes, panels):
         y_view = None
@@ -994,7 +996,7 @@ def plot_landscape(result: dict, truth: Optional[Dict[str, float]] = None, optim
                     mew=1.0, ls="none", zorder=5, label="truth")
         if optimum is not None:
             ax.plot(float(np.asarray(optimum["inclination"])), float(np.asarray(optimum["log_mdot"])), marker="X",
-                    ms=10, color="#e34948", mec="white", mew=1.0, ls="none", zorder=5, label="optimise() peak")
+                    ms=10, color="#e34948", mec="white", mew=1.0, ls="none", zorder=5, label="single-Gaussian peak")
         ax.set_xlim(inc_edges.min(), inc_edges.max())
         ax.set_ylim(*(y_view or (lm_edges.min(), lm_edges.max())))
         ax.set_xlabel("inclination (degrees)")

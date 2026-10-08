@@ -110,7 +110,7 @@ def fit(data, extras: bool):
     t0 = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ef.optimise(num_samples=300, num_restarts=2)
+        ef.optimise(num_samples=300, num_restarts=2, method="laplace")
     s = ef.samples
     out = dict(seconds=time.perf_counter() - t0, log_evidence=ef.log_evidence,
                restarts_agreeing=ef.optimise_timings["restarts_agreeing"],

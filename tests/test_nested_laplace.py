@@ -82,8 +82,10 @@ def test_echofit_nested_laplace_end_to_end():
     ef.build_grid(n_freq=10, n_tau=60, period_max=2 * np.pi / float(data["freqs"].min()))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ef.nested_laplace(num_samples=200, n_pass=(6, 5), n_fine=(10, 8))
+        ef.optimise(num_samples=200, n_pass=(6, 5), n_fine=(10, 8))  # nested Laplace is optimise()'s default
     r = ef.nested_laplace_result
+    assert ef.optimise_timings["method"] == "nested_laplace" and ef.optimise_restarts is None
+    assert np.ndim(ef.optimum["log_mdot"]) == 0 and ef.laplace_covariance.shape[0] == ef.laplace_covariance.shape[1]
     assert set(r["names"]) == {"log_mdot", "cos_inclination"}
     for key in ("log_mdot", "inclination", "sigma_drw", "S", "C", "y_pred_g"):
         assert key in ef.samples and len(ef.samples[key]) == 200
@@ -146,3 +148,11 @@ def test_plot_landscape_and_report_section(tmp_path):
         assert len(axes) == 2
         html = reporting.generate_report(ef, tmp_path)
     assert "Badness-of-Fit landscape" in open(html).read()
+
+
+def test_optimise_rejects_an_unknown_method():
+    import pytest
+
+    ef = EchoFit(M_BH=1.0e8)
+    with pytest.raises(ValueError, match="nested_laplace"):
+        ef.optimise(method="nonsense")

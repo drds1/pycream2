@@ -1,7 +1,8 @@
 """
 Badness-of-Fit landscapes of log_mdot against inclination (EchoFit.plot_landscape)
 for synthetic cases from scripts/synthetic_recovery_grid.py, with the truth and
-EchoFit.optimise()'s peak marked: the figures in docs/nested_laplace.md.
+the single-Gaussian solve's peak (optimise(method="laplace")) marked: the
+figures in docs/nested_laplace.md.
 
 Usage (from the repository root):
     MPLBACKEND=Agg poetry run python scripts/plot_nested_laplace_landscape.py \
@@ -35,10 +36,8 @@ def main():
         ef = grid.make_echofit(bands, frequency_grid="auto")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ef.optimise(rng_seed=seed)
-            optimum = ef.optimum
-            ef.nested_laplace(rng_seed=seed)
-        ef.optimum = optimum
+            ef.optimise(rng_seed=seed, method="laplace")  # marked on the landscape
+            ef.optimise(rng_seed=seed)                    # nested Laplace
         r, smp = ef.nested_laplace_result, ef.samples
         print(f"{case}: log_mdot {smp['log_mdot'].mean():.2f}+/-{smp['log_mdot'].std():.2f} "
               f"inclination {smp['inclination'].mean():.1f}+/-{smp['inclination'].std():.1f} "

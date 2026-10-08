@@ -220,9 +220,53 @@ def _solve_point(prob, theta, zr_start, h_rr, exact_hessian, rough=False):
                log_jac=prob.log_jacobian(zo, theta), h_used=h_rr)
     if exact_hessian:
         h_rr, h_ro = prob.hessian(zr, zo)
-        sign, logdet = np.linalg.slogdet(h_rr)
-        out.update(h_rr=h_rr, h_ro=h_ro, logdet=logdet if sign > 0 else np.nan)
+        h_reg, indefinite = _saddle_free(h_rr)
+        out.update(h_rr=h_reg, h_ro=h_ro, logdet=float(np.linalg.slogdet(h_reg)[1]), indefinite=indefinite)
     return out
+
+
+def _polish(prob, objective, z, max_iter=20, tol=0.01):
+    """Damped, saddle-free Newton steps on the full potential from ``z``, each
+    accepted only if the potential falls, until the step is below ``tol``
+    posterior sds: the same polish as optimise(method="laplace") (CLAUDE.md
+    decision #21). L-BFGS alone can stop well short of the peak along
+    prior-dominated directions; without this, the demo's diffuse-continuum
+    fit found a "mode" ~3400 in log evidence below the real one."""
+    z = np.asarray(z, dtype=np.float64)
+    f, g = objective(z)
+    damping = 0.0
+    for _ in range(max_iter):
+        h = np.asarray(prob.full_hessian(jnp.asarray(z, dtype=prob.dtype)), dtype=np.float64)
+        vals, vecs = np.linalg.eigh(0.5 * (h + h.T))
+        vals = np.clip(np.abs(vals), 1e-8 * max(np.abs(vals).max(), 1e-12), None)
+        ge = vecs.T @ g
+        if np.max(np.abs(vecs @ (ge / vals)) / np.sqrt(np.diag((vecs / vals) @ vecs.T))) < tol:
+            break
+        for _ in range(15):
+            step = vecs @ (ge / (vals + damping))
+            f_new, g_new = objective(z - step)
+            if f_new < f:
+                break
+            damping = max(10.0 * damping, 1e-6 * vals.max())
+        else:
+            break
+        z, f, g = z - step, f_new, g_new
+        damping /= 10.0
+    return z, f
+
+
+def _saddle_free(h):
+    """``h`` with its eigenvalues replaced by their absolute values (floored at
+    1e-8 of the largest), and whether any was not positive. An inner Hessian
+    need not be positive definite at every grid point (a component pressed
+    against a bound, say: first seen on the demo's diffuse-continuum fit), and
+    the covariance, the first-order shift and log det H all need it to be; the
+    same convention as optimise(method="laplace")'s Newton polish. Points where
+    it applies are counted in the timings, and k_hat shows any harm."""
+    vals, vecs = np.linalg.eigh(0.5 * (h + h.T))
+    indefinite = bool(vals.min() <= 0)
+    vals = np.clip(np.abs(vals), 1e-8 * max(np.abs(vals).max(), 1e-12), None)
+    return (vecs * vals) @ vecs.T, indefinite
 
 
 def _log_marginal(point, logdet, d_inner):
@@ -321,7 +365,7 @@ def run(model, kwargs, info, num_samples: int = 1000, rng_seed: int = 0,
         grid_params: Sequence[str] = DEFAULT_GRID_PARAMS, n_pass: Optional[Sequence[int]] = None,
         n_fine: Optional[Sequence[int]] = None, drop: float = 8.0, max_passes: int = 8,
         stride: int = 4, prior_span_sd: float = 3.3, upsample: int = 4, max_seeds: int = 4,
-        mode_fraction: float = 0.2, t_dof: float = 6.0) -> dict:
+        mode_fraction: float = 0.2, t_dof: float = 6.0, num_restarts: int = 4, restart_scale: float = 0.5) -> dict:
     """The nested Laplace approximation of ``model``'s marginalised posterior;
     see the module docstring. ``info`` is NumPyro's ``initialize_model`` result
     for ``model(**kwargs)``. Returns a dict with the draws (unconstrained ``z``,
@@ -348,15 +392,12 @@ def run(model, kwargs, info, num_samples: int = 1000, rng_seed: int = 0,
 
     res = minimize(objective, np.asarray(prob.z0, dtype=np.float64), jac=True, method="L-BFGS-B",
                    options=dict(ftol=1e-7, gtol=1e-3, maxiter=1000))
-    z_hat = res.x
+    z_hat, _ = _polish(prob, objective, res.x)
     theta_hat = np.array([float(prob.transforms[n](jnp.asarray(z_hat[i]))) for n, i in zip(prob.names, prob.outer)])
     h_full = np.asarray(prob.full_hessian(jnp.asarray(z_hat, dtype=prob.dtype)), dtype=np.float64)
     h_full = 0.5 * (h_full + h_full.T)
-    h_rr0 = h_full[np.ix_(prob.inner, prob.inner)]
-    sign, logdet0 = np.linalg.slogdet(h_rr0)
-    if sign <= 0:
-        h_rr0 = np.diag(np.abs(np.diag(h_rr0)) + 1e-6)
-        logdet0 = np.linalg.slogdet(h_rr0)[1]
+    h_rr0 = _saddle_free(h_full[np.ix_(prob.inner, prob.inner)])[0]
+    logdet0 = np.linalg.slogdet(h_rr0)[1]
     start = dict(theta=theta_hat, zr=z_hat[prob.inner], h_rr=h_rr0)
     timings["start_seconds"] = time.perf_counter() - t0
 
@@ -387,14 +428,25 @@ def run(model, kwargs, info, num_samples: int = 1000, rng_seed: int = 0,
     peaks = np.where((maximum_filter(finite, size=3, mode="nearest") == finite).ravel()
                      & (finite.ravel() > finite.max() - 3 * MODE_DROP))[0]
     peaks = peaks[np.argsort(-finite.ravel()[peaks])][:max_seeds]
+    # Seeds: the polished data-anchored optimum, the scout grid's local maxima,
+    # and random perturbations of the data-anchored start, as
+    # optimise(method="laplace")'s restarts (same scale), so the mode search is
+    # never weaker than that solve's. The perturbations matter where the *inner*
+    # parameters have optima of their own: on the demo's diffuse-continuum fit
+    # the data-anchored start and the scout seeds all led to a basin ~3400 in
+    # log evidence below the one a perturbed restart found.
+    rng_seeds = np.random.default_rng(rng_seed)
     seeds = [z_hat] + [np.asarray(prob.assemble(jnp.asarray(scout[k]["zr"], dtype=prob.dtype),
                                                 jnp.asarray(scout[k]["zo"], dtype=prob.dtype)), dtype=np.float64)
                        for k in peaks]
+    seeds += [np.asarray(prob.z0, dtype=np.float64) + restart_scale * rng_seeds.normal(size=prob.z0.size)
+              for _ in range(num_restarts - 1)]
     modes = []
     for zs in seeds:
         m = minimize(objective, zs, jac=True, method="L-BFGS-B", options=dict(ftol=1e-7, gtol=1e-3, maxiter=1000))
         if not np.isfinite(m.fun) or m.fun >= 1e9:
             continue
+        m.x, m.fun = _polish(prob, objective, m.x)
         h = np.asarray(prob.full_hessian(jnp.asarray(m.x, dtype=prob.dtype)), dtype=np.float64)
         h = 0.5 * (h + h.T)
         vals, vecs = np.linalg.eigh(h)
@@ -479,6 +531,7 @@ def run(model, kwargs, info, num_samples: int = 1000, rng_seed: int = 0,
     fine_logp = np.array([_log_marginal(p, ld, d_in) for p, ld in zip(fine_points, logdet)]).reshape(fine_shape)
     timings["final_seconds"] = time.perf_counter() - t0
     timings["final_points"] = int(np.prod(fine_shape))
+    timings["indefinite_hessians"] = int(sum(bool(p.get("indefinite")) for p in fine_points))
 
     finite = np.where(np.isfinite(fine_logp), fine_logp, -np.inf)
     edge_drop = np.inf
@@ -625,4 +678,5 @@ def run(model, kwargs, info, num_samples: int = 1000, rng_seed: int = 0,
         ess=float(1.0 / np.sum(weights ** 2)), names=prob.names, unravel=prob.unravel, dtype=prob.dtype,
         fine_axes=fine_axes, fine_logp=fine_logp, passes=passes, edge_drop=float(edge_drop),
         log_evidence_is=log_z_is, log_evidence_grid=log_z_grid, z_hat=z_hat, timings=timings,
+        modes=[{k: o[k] for k in ("theta", "sd", "z", "U", "cov", "log_evidence")} for o in modes],
     )

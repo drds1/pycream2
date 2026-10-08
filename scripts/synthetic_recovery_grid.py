@@ -174,7 +174,7 @@ def run_one(band_set: str, snr: float, cadence: float, seed: int, method: str, o
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         if method.startswith("optimise"):
-            ef.optimise(rng_seed=seed, **OPTIMISE)
+            ef.optimise(rng_seed=seed, method="laplace", **OPTIMISE)
         elif method == "nested_laplace":
             ef.nested_laplace(rng_seed=seed)
         else:

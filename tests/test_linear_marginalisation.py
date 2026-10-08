@@ -214,7 +214,7 @@ def test_optimise_restarts_are_polished_and_compared():
     synthetic light curves in test_optimise_laplace_matches_nuts instead."""
     ef = _small_echofit()
     with pytest.warns(UserWarning, match="restarts reached the same optimum"):
-        ef.optimise(num_samples=50, num_restarts=3, restart_scale=1.0)
+        ef.optimise(num_samples=50, num_restarts=3, restart_scale=1.0, method="laplace")
     restarts = ef.optimise_restarts
     assert len(restarts) == 3
     assert min(r["delta_potential"] for r in restarts) == 0.0
@@ -232,7 +232,7 @@ def test_optimise_fills_samples_and_can_seed_nuts(tmp_path):
     plots read, and fit(init_from_optimum=True) can start NUTS at its peak,
     for both the sampled and the marginalised model."""
     ef = _small_echofit()
-    ef.optimise(num_samples=50, num_restarts=2)
+    ef.optimise(num_samples=50, num_restarts=2, method="laplace")
     assert ef.optimise_timings["newton_offset_in_sd"] < 0.1
     for key in ("log_mdot", "inclination", "S", "C", "C_g", "C_driver", "y_pred_g"):
         assert ef.samples[key].shape[0] == 50, key
@@ -270,7 +270,7 @@ def test_optimise_laplace_matches_nuts():
             ef.add_lightcurve(name, wavelength=d["wavelength"], t=d["t"], y=d["y"], yerr=d["yerr"])
         ef.build_grid(n_freq=30, n_tau=200)
         if direct:
-            ef.optimise(restart_scale=1.0)
+            ef.optimise(restart_scale=1.0, method="laplace")
             # Real light curves: every restart, from widely spread starts,
             # must reach the same optimum.
             assert ef.optimise_timings["restarts_agreeing"] == 4

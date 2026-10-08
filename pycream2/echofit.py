@@ -247,6 +247,7 @@ class EchoFit:
         self.optimise_restarts: Optional[list] = None
         self.log_evidence: Optional[float] = None
         self.nested_laplace_result: Optional[dict] = None
+        self._laplace_peak: Optional[dict] = None  # optimise(method="laplace")'s peak, for plot_landscape
         self.nested_laplace_timings: Optional[dict] = None
         self.samples: Optional[dict] = None
         self.extra_fields: dict = {}
@@ -922,9 +923,39 @@ class EchoFit:
 
     def optimise(
         self, num_samples: int = 1000, num_restarts: int = 4, rng_seed: int = 0,
+        restart_scale: float = 0.5, method: str = "nested_laplace", **nested_kwargs,
+    ):
+        """Directly solve for the posterior, without MCMC.
+
+        ``method="nested_laplace"`` (the default since October 2026) runs
+        :meth:`nested_laplace`: a grid over ``log_mdot`` and inclination with
+        the other parameters integrated at every point, corrected by
+        importance sampling. It follows a curved ridge or a second mode,
+        which a single Gaussian cannot; see ``docs/nested_laplace.md``.
+        ``nested_kwargs`` are passed to it, as are ``num_restarts`` and
+        ``restart_scale`` (random restarts of its mode search).
+
+        ``method="laplace"`` is the original single-Gaussian solve (the
+        default before), described below, with its multi-start check
+        (``optimise_restarts``). It is faster (by 1.4-1.8x on the synthetic
+        cases measured) and exact for a Gaussian posterior, but understated
+        the uncertainty up to six-fold on weakly constraining data.
+        """
+        if method == "nested_laplace":
+            return self.nested_laplace(num_samples=num_samples, rng_seed=rng_seed, num_restarts=num_restarts,
+                                       restart_scale=restart_scale, **nested_kwargs)
+        if method != "laplace":
+            raise ValueError(f"optimise(method=...) must be 'nested_laplace' or 'laplace', not {method!r}")
+        if nested_kwargs:
+            raise TypeError(f"optimise(method='laplace') got unexpected arguments {sorted(nested_kwargs)}")
+        return self._optimise_laplace(num_samples=num_samples, num_restarts=num_restarts, rng_seed=rng_seed,
+                                      restart_scale=restart_scale)
+
+    def _optimise_laplace(
+        self, num_samples: int = 1000, num_restarts: int = 4, rng_seed: int = 0,
         restart_scale: float = 0.5,
     ):
-        """Directly solve for the posterior, without MCMC: maximise the
+        """``optimise(method="laplace")``. Directly solve for the posterior, without MCMC: maximise the
         linear-marginalised posterior over the ~10 nonlinear parameters with
         L-BFGS, then approximate the posterior around that peak as a
         Gaussian from its Hessian (the Laplace approximation), and draw the
@@ -1205,6 +1236,7 @@ class EchoFit:
             constrain_fn(reverberation_model, (), kwargs, unravel(z_hat), return_deterministic=True).items()
         }
         self.laplace_covariance = cov
+        self._laplace_peak = dict(self.optimum)
         # Laplace estimate of the log evidence of the marginal posterior (the
         # linear parameters are integrated out exactly):
         # ln Z ~ -U* + d/2 ln(2 pi) + 1/2 ln det(cov), for comparing models,
@@ -1213,6 +1245,7 @@ class EchoFit:
         self.log_evidence = -float(best.fun) + 0.5 * cov.shape[0] * np.log(2.0 * np.pi) + 0.5 * logdet
         self.optimise_result = best
         timings["draws_seconds"] = time.perf_counter() - t0
+        timings["method"] = "laplace"
         self.optimise_timings = timings
         self._maybe_disc_sed()
         return self
@@ -1220,7 +1253,7 @@ class EchoFit:
     # ------------------------------------------------------------------
     def nested_laplace(
         self, num_samples: int = 1000, rng_seed: int = 0, grid_params=None, n_pass=None,
-        n_fine=None, drop: float = 8.0,
+        n_fine=None, drop: float = 8.0, num_restarts: int = 4, restart_scale: float = 0.5,
     ):
         """Posterior by a nested Laplace approximation (after INLA, Rue,
         Martino & Chopin 2009), corrected by Pareto-smoothed importance
@@ -1237,8 +1270,11 @@ class EchoFit:
         draws are importance-weighted against the exact posterior and
         resampled; ``k_hat`` (Pareto shape) below ~0.7 means they are reliable.
 
-        Fills ``self.samples``/``self._samples_by_chain`` like ``.optimise()``
-        (with the exact linear draws), and sets ``self.log_evidence`` (the
+        This is what ``.optimise()`` runs by default. Fills
+        ``self.samples``/``self._samples_by_chain`` (with the exact linear
+        draws), sets ``self.optimum``/``self.laplace_covariance`` at the best
+        mode (as ``optimise(method="laplace")`` does at its peak),
+        ``self.log_evidence`` (the
         importance-sampling estimate), ``self.nested_laplace_result`` (the
         grids, their log posterior, ``k_hat``, the effective sample size of
         the weights, both evidence estimates) and
@@ -1262,6 +1298,9 @@ class EchoFit:
         drop : float
             Log-density drop from the peak that bounds the region gridded
             (8 leaves out ~0.03 per cent of a Gaussian's mass).
+        num_restarts, restart_scale : int, float
+            Random restarts of the mode search, perturbing the data-anchored
+            start as ``optimise(method="laplace")`` does (same defaults).
         """
         from numpyro.infer.util import constrain_fn, initialize_model
 
@@ -1277,7 +1316,7 @@ class EchoFit:
         )
         result = _nl.run(reverberation_model, kwargs, info, num_samples=num_samples, rng_seed=rng_seed,
                          grid_params=grid_params or _nl.DEFAULT_GRID_PARAMS, n_pass=n_pass, n_fine=n_fine,
-                         drop=drop)
+                         drop=drop, num_restarts=num_restarts, restart_scale=restart_scale)
         t0 = time.perf_counter()
         unravel = result["unravel"]
         constrained = jax.vmap(
@@ -1297,6 +1336,22 @@ class EchoFit:
         self.log_evidence = result["log_evidence_is"]
         self.nested_laplace_result = {k: v for k, v in result.items() if k not in ("unravel", "dtype")}
         self.nested_laplace_timings = result["timings"]
+        # The same peak attributes as optimise(method="laplace"), at the best mode
+        # (highest Laplace evidence), so fit(init_from_optimum=True), the SED
+        # analysis and plot_landscape work after either solve.
+        from scipy.optimize import OptimizeResult
+
+        best = max(result["modes"], key=lambda o: o["log_evidence"])
+        self.optimum = {
+            k: np.asarray(v) for k, v in constrain_fn(
+                reverberation_model, (), kwargs, unravel(jnp.asarray(best["z"], dtype=result["dtype"])),
+                return_deterministic=True,
+            ).items()
+        }
+        self.laplace_covariance = np.asarray(best["cov"])
+        self.optimise_result = OptimizeResult(x=np.asarray(best["z"]), fun=float(best["U"]))
+        self.optimise_restarts = None
+        self.optimise_timings = dict(result["timings"], method="nested_laplace")
         if result["k_hat"] > 0.7:
             warnings.warn(
                 f"nested_laplace(): Pareto k_hat = {result['k_hat']:.2f} > 0.7, so the importance-weighted "
@@ -1532,11 +1587,12 @@ class EchoFit:
         """Badness-of-Fit landscape of ``log_mdot`` against inclination from
         :meth:`nested_laplace` (the scout grid over the prior range, and the
         final grid with 68/95/99.7 per cent contours) -- see
-        :func:`plotting.plot_landscape`. Marks ``truth`` if given and
-        ``.optimise()``'s peak if it has run."""
+        :func:`plotting.plot_landscape`. Marks ``truth`` if given and the
+        single-Gaussian solve's peak if ``optimise(method="laplace")`` has
+        run on this object."""
         if not self.nested_laplace_result:
-            raise RuntimeError("plot_landscape: call .nested_laplace() first.")
-        return plotting.plot_landscape(self.nested_laplace_result, truth=truth, optimum=self.optimum, **kwargs)
+            raise RuntimeError("plot_landscape: call .optimise() or .nested_laplace() first.")
+        return plotting.plot_landscape(self.nested_laplace_result, truth=truth, optimum=self._laplace_peak, **kwargs)
 
     def plot_optimise_restarts(self, param_names=None, **kwargs):
         """Multi-start reproducibility of :meth:`optimise` -- see

@@ -859,7 +859,8 @@ match; `pycream2.__version__` reads the installed metadata);
       gradient). `marginalise_linear` therefore stays opt-in and off by default, documented as *not*
       faster for NUTS; it may win where the sampled geometry is genuinely hard (many more Fourier modes,
       poorly adapted mass matrix), which is untested.
-    - **The real payoff is `EchoFit.optimise()`**: L-BFGS on the marginal posterior (multi-start,
+    - **The real payoff is `EchoFit.optimise()`** (now `optimise(method="laplace")`; the default became the
+      nested Laplace solve, decision #28): L-BFGS on the marginal posterior (multi-start,
       `scipy.optimize.minimize` with JAX gradients), then a Laplace Gaussian from the Hessian in
       NumPyro's unconstrained space, then exact linear draws. On the same benchmark the whole first
       call took ~27s (~5s L-BFGS over 4 restarts, 2 Newton iterations; the rest mostly one-off JIT
@@ -1109,9 +1110,36 @@ match; `pycream2.__version__` reads the installed metadata);
     the existing recovery tests could never have caught this. Every earlier fit used the old grid.
 
 28. **`EchoFit.nested_laplace()` (`pycream2/nested_laplace.py`): a nested Laplace approximation with an
-    importance-sampling correction, the fast solve that survives ridges and multiple modes (October 2026, a
-    direct request: "I want the speed but not compromise the accuracy"; literature search first, then INLA
-    chosen; full write-up `docs/nested_laplace.md`, validation `scripts/validate_nested_laplace.py`).**
+    importance-sampling correction, the fast solve that survives ridges and multiple modes, and since 8
+    October 2026 what `optimise()` runs by default (October 2026, a direct request: "I want the speed but not
+    compromise the accuracy"; literature search first, then INLA chosen; then "maybe we should replace
+    optimise to use the nested laplace as the default method"; full write-up `docs/nested_laplace.md`,
+    validation `scripts/validate_nested_laplace.py`).**
+    - **The default switch.** `optimise(method="nested_laplace")` (default) calls `nested_laplace()`;
+      `optimise(method="laplace")` is decision #21's single-Gaussian solve, unchanged, with its multi-start
+      check (`optimise_restarts`). `nested_laplace()` also sets `optimum`, `laplace_covariance` (both at the
+      best mode) and `optimise_result`, and clears `optimise_restarts`, so `fit(init_from_optimum=True)`, the
+      SED analysis and the report work after either. The single-Gaussian peak is kept separately
+      (`_laplace_peak`) for `plot_landscape()`'s marker. Everything that relies on the single-Gaussian
+      solve's own outputs, or produces documented numbers, pins `method="laplace"`: the restart/Laplace
+      tests, `plot_extra_components.py`, `plot_rippled_disc.py`, `plot_disc_sed_example.py`,
+      `plot_performance_analysis.py`, the recovery grid's `optimise*` methods, and the (untracked) NGC 5548
+      and Fairall 9 paper scripts. `fit_lightcurves.py --optimise` uses the new default (`--laplace` for the
+      old). Not yet run on real data: with 13 bands and `fit_error_model`, ~40 parameters sit inside each
+      grid point, and the inner Hessian costs one gradient pass per inner parameter.
+    - **Found while switching the default, on the demo notebook's extra-components fit (5 bands x 120
+      points, diffuse continuum in 3 bands, backgrounds in 2).** (a) An inner Hessian at a final-grid point
+      was not positive definite and the Cholesky crashed: `_saddle_free` (absolute eigenvalues) now applies
+      wherever an inner Hessian feeds a covariance, a shift or log det, and such points are counted
+      (`timings["indefinite_hessians"]`). (b) The mode search now Newton-polishes every L-BFGS result
+      (`_polish`) and adds `optimise(method="laplace")`'s random restarts as seeds, so it is never weaker
+      than that solve. (c) The fit itself came out wrong (log_mdot -1.14 for a true 0.3) with *both*
+      solves, which agreed exactly (ln Z -2625.6/-2625.7): not a nested-Laplace fault but the decision #27
+      grid mismatch, the notebook's data being drawn on a baseline-length basis and fitted on the new
+      longer one, the same thing that broke six tests in PR #30. The notebook now fits on the truth's
+      basis (`period_max=2 pi / data["freqs"].min()`). **Follow-up worth doing:** make
+      `synthetic.generate_synthetic_dataset` draw its truth on `build_grid()`'s default grid, so synthetic
+      data stop needing this.
     `optimise()`'s single Gaussian failed on the synthetic recovery grid's g+i SNR 100 cases: seed 1 has two
     modes (optimise 1.99 +/- 0.20, all restarts agreeing, true posterior 2.59 +/- 1.24 by nested sampling),
     seed 2 a long ridge (optimise 4.21 +/- 0.50 with restarts disagreeing). A single NUTS chain was no

@@ -130,7 +130,7 @@ def main():
     t0 = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ef.optimise(rng_seed=args.seed)
+        ef.optimise(rng_seed=args.seed, method="laplace")
     results["optimise"] = _summary(ef.samples["log_mdot"], ef.samples["inclination"], time.perf_counter() - t0,
                                    restarts_agreeing=ef.optimise_timings["restarts_agreeing"],
                                    log_evidence=float(ef.log_evidence))

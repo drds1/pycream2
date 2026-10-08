@@ -246,7 +246,7 @@ if you want the model structure on but one part pinned.
 ## 🧭 Choosing settings: the fitting guide
 
 The model above comes with a fair number of choices: how to solve it
-(full MCMC with `.fit()`, or the much quicker `.nested_laplace()` and `.optimise()` direct solves),
+(full MCMC with `.fit()`, or the much quicker `.optimise()` direct solve),
 the sampler's settings, how finely to grid frequencies and lags, which
 driver prior, and which bands get physical or free lags. Every one has a
 sensible default, so a plain `ef.build_grid(); ef.fit()` works out of the
@@ -306,8 +306,11 @@ docs/
                           CREAM Fortran implementation
     performance_improvements.md  precomputed trig matrices, dense mass by
                           default, linear-parameter marginalisation and the
-                          optimise() direct solve, blackbody disk colours:
+                          single-Gaussian direct solve, blackbody disk colours:
                           theory, maths and before/after benchmarks
+    nested_laplace.md     the default direct solve (optimise()): what it is,
+                          how it works, validation against nested sampling,
+                          Badness-of-Fit landscapes of log_mdot and inclination
     releasing.md          how to bump the version and publish a release to PyPI
 notebooks/
     demo.ipynb            end-to-end synthetic-data demo
@@ -318,6 +321,8 @@ scripts/
     plot_thin_disk_response_scalings.py  regenerates docs/thin_disk_response.md's charts
     plot_dense_mass_comparison.py  regenerates docs/mcmc_implementation.md's charts
     plot_performance_analysis.py  regenerates docs/performance_improvements.md's charts
+    plot_nested_laplace_landscape.py  regenerates docs/nested_laplace.md's landscapes
+    validate_nested_laplace.py  the nested Laplace solve against nested sampling
 tests/
     test_forward_model.py  basic sanity checks on the forward model
     test_recovery.py       end-to-end MCMC recovery test on synthetic data
@@ -489,41 +494,45 @@ default, and when to change it.
 ### ⚡ Direct solve, no MCMC
 
 ```python
-ef.nested_laplace()                    # grid + Laplace + importance weights, no MCMC
-print(ef.nested_laplace_result["k_hat"])  # below 0.7: the draws are reliable
-ef.optimise()                          # quicker: L-BFGS + a single Gaussian
+ef.optimise()                          # nested Laplace: grid + Laplace + importance weights
+print(ef.nested_laplace_result["k_hat"])  # below 0.7: the result is reliable
+ef.plot_landscape()                    # Badness-of-Fit map of log_mdot against inclination
 ef.plot_lightcurve_fits()              # every plot works on the result, as after .fit()
+ef.optimise(method="laplace")          # quicker: L-BFGS + a single Gaussian
 ef.fit(init_from_optimum=True)         # optional: full NUTS, started at the optimum
 ```
-
-`nested_laplace()` grids `log_mdot` and inclination, integrates everything
-else (exactly for the linear parameters, by a Laplace approximation for the
-rest), and importance-weights its draws against the exact posterior, so it
-follows a curved ridge or a second mode where `optimise()`'s single Gaussian
-cannot. On synthetic g and i light curves at SNR 100, where the posterior
-has two modes, it matched nested sampling (log_mdot 2.63 ± 1.24 against
-2.59 ± 1.24) at about 1.7 times `optimise()`'s cost, where `optimise()` gave
-1.99 ± 0.20. See [`docs/nested_laplace.md`](docs/nested_laplace.md).
 
 With the nonlinear parameters (`log_mdot`, inclination, band gains,
 `sigma_drw`, ...) held fixed, every predicted light curve is *linear* in the
 driver's Fourier coefficients and the band offsets, which have Gaussian
 priors, so those ~130 parameters integrate out of the likelihood exactly.
-`optimise()` then maximises the remaining ~10-parameter marginal posterior
-with L-BFGS, fits a Gaussian to its curvature at the peak (the Laplace
-approximation) and draws the linear parameters exactly for every sample.
-On a 5-band synthetic benchmark the whole call took ~27 s (~5 s of it
-L-BFGS itself, most of the rest one-off JIT compilation) against ~56 s for a
-500 + 500 NUTS run, and reproduced NUTS's `log_mdot` posterior
-(0.194 ± 0.012 against 0.193 ± 0.011); the gap widens for longer runs.
-It assumes one well-defined, roughly Gaussian peak: it's weakest for
-broad parameters pressed against a prior bound (inclination, here), and
-wrong for anything multimodal, so keep using `.fit()` for free-lag bands
-and whenever the answer matters enough to check.
+What remains is about 10 parameters, and only two of them, `log_mdot` and the
+inclination, make the posterior awkward: on data that constrain the disc
+weakly it becomes a curved valley or has two separate basins.
+
+`optimise()` therefore uses a **nested Laplace approximation** by default
+(after INLA, Rue, Martino & Chopin 2009): it lays `log_mdot` and the
+inclination out on a grid, optimises and Laplace-integrates the remaining
+few parameters at every grid point, and importance-weights its draws against
+the exact posterior, reporting a reliability check (Pareto `k_hat`). The grid
+itself is the Badness-of-Fit landscape, `ef.plot_landscape()`. On synthetic g
+and i light curves at SNR 100, where the posterior has two basins, it matched
+nested sampling (log_mdot 2.61 ± 1.25 against 2.59 ± 1.24, truth 1.95) in
+190 s against 2610 s. The original single-Gaussian solve,
+`optimise(method="laplace")`, is 1.4 to 1.8 times faster and fine for data
+that clearly constrain the disc, but on that case reported 1.99 ± 0.20.
+Everything about the method, its validation and costs, with the landscape
+maps, is in [`docs/nested_laplace.md`](docs/nested_laplace.md).
+
+On a 5-band synthetic benchmark where the posterior is a single clean peak,
+the single-Gaussian solve took ~27 s against ~56 s for a 500 + 500 NUTS run
+and reproduced NUTS's `log_mdot` posterior (0.194 ± 0.012 against
+0.193 ± 0.011). Keep using `.fit()` for free-lag bands (a lag per band is
+too many to grid), and whenever `k_hat` is above 0.7.
 `EchoFit(marginalise_linear=True)` runs NUTS on the same marginalised
 model; that's exact too, but measured *slower* than the default sampled
-model now that each sampled step is cheap. Everything above, with the
-maths, charts and before/after tables, is in
+model on the skew-normal benchmark. The maths, charts and before/after
+tables for the marginalisation and the single-Gaussian solve are in
 [`docs/performance_improvements.md`](docs/performance_improvements.md).
 
 ## 📈 Fitting your own light curves, with saved/resumable runs

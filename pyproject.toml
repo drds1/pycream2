@@ -63,6 +63,16 @@ optional = true
 [tool.poetry.group.remote.dependencies]
 kaggle = ">=1.6"
 
+# Nested sampling (nautilus; Lange 2023, MNRAS 525, 3181), used only as an
+# independent reference for multimodal posteriors when validating
+# EchoFit.nested_laplace (scripts/validate_nested_laplace.py):
+# `poetry install --with validation`. Optional, never needed to use the package.
+[tool.poetry.group.validation]
+optional = true
+
+[tool.poetry.group.validation.dependencies]
+nautilus-sampler = ">=1.0"
+
 [project.urls]
 Homepage = "https://github.com/drds1/pycream2"
 Documentation = "https://drds1.github.io/pycream2/"

@@ -66,11 +66,12 @@ BAND_SETS = ["gi", "gri", "ugriz"]
 SNRS = [30, 100, 300, 1000]
 CADENCES = [0.5, 1.0, 2.0, 4.0]  # mean days between points, per filter
 SEEDS = list(range(5))
+# "nested_laplace" is EchoFit.nested_laplace() on build_grid()'s default grid.
 # Two more optimise() runs on other frequency grids: "optimise_auto" uses
 # build_grid()'s default, 2 (baseline + tau_max) = ~260 days here, with 60
 # frequencies; "optimise_baseline" uses the baseline as the longest period (the
 # default until October 2026), to measure the bias a longer period removes.
-METHODS = ["optimise", "nuts", "optimise_auto", "optimise_baseline"]
+METHODS = ["optimise", "nuts", "optimise_auto", "optimise_baseline", "nested_laplace"]
 
 T_SPAN = 100.0  # days
 DT_SIM = 0.05  # days, simulation grid
@@ -167,13 +168,15 @@ def run_one(band_set: str, snr: float, cadence: float, seed: int, method: str, o
     if (dest / f"{method}.json").exists():
         return
     bands = simulate(band_set, snr, cadence, seed)
-    grid = method.split("_")[1] if "_" in method else "main"
+    grid = "auto" if method == "nested_laplace" else (method.split("_")[1] if "_" in method else "main")
     ef = make_echofit(bands, frequency_grid=grid, marginalise_linear=(method == "nuts"))
     t0 = time.perf_counter()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         if method.startswith("optimise"):
             ef.optimise(rng_seed=seed, **OPTIMISE)
+        elif method == "nested_laplace":
+            ef.nested_laplace(rng_seed=seed)
         else:
             ef.fit(rng_seed=seed, num_chains=1, progress_bar=False, generate_report=False, **NUTS)
     seconds = time.perf_counter() - t0
@@ -186,6 +189,9 @@ def run_one(band_set: str, snr: float, cadence: float, seed: int, method: str, o
     if method.startswith("optimise"):
         meta.update(timings=ef.optimise_timings, potential=float(ef.optimise_result.fun),
                     optimum={k: float(ef.optimum[k]) for k in ("log_mdot", "inclination")})
+    elif method == "nested_laplace":
+        r = ef.nested_laplace_result
+        meta.update(timings=r["timings"], k_hat=r["k_hat"], ess=r["ess"], log_evidence=r["log_evidence_is"])
     else:
         from numpyro.diagnostics import effective_sample_size, split_gelman_rubin
 
@@ -203,7 +209,7 @@ def run_one(band_set: str, snr: float, cadence: float, seed: int, method: str, o
 def _cost(job) -> float:
     """Rough relative cost of one fit: NUTS ~20x optimise(), both ~linear in the data."""
     _, band_set, _, cadence, method = job
-    return (20.0 if method == "nuts" else 1.0) * len(band_set) * T_SPAN / cadence
+    return {"nuts": 20.0, "nested_laplace": 2.0}.get(method, 1.0) * len(band_set) * T_SPAN / cadence
 
 
 def _shard(todo: list, k: int, n: int) -> list:

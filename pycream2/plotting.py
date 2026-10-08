@@ -36,6 +36,7 @@ dependency on JAX or NumPyro themselves.
 
 from __future__ import annotations
 
+import warnings
 from typing import Dict, Optional, Sequence
 
 import numpy as np
@@ -918,4 +919,90 @@ def plot_disc_sed(result: dict, bands: Dict[str, dict], figsize=(10, 7.5)):
     for ax in axes.flat:
         ax.grid(alpha=0.6)
     fig.tight_layout()
+    return fig, axes
+
+
+def plot_landscape(result: dict, truth: Optional[Dict[str, float]] = None, optimum: Optional[Dict[str, float]] = None,
+                   max_delta_bof: float = 60.0, figsize=(11, 4.6)):
+    """Badness-of-Fit landscape of ``log_mdot`` against inclination from
+    ``EchoFit.nested_laplace()``: at every grid point the other nonlinear
+    parameters are optimised and integrated (Laplace) and the linear ones
+    integrated exactly, so this is the marginal posterior, shown as
+    ``Delta BOF = -2 (log p - max log p)`` (BOF = 2 x potential, as in
+    :func:`plot_bof`).
+
+    Left: the scout grid over the whole prior range, every basin the search
+    saw (its log det term is held fixed, so it is approximate). Right: the
+    final grid, zoomed on the posterior, with contours where Delta BOF =
+    2.30, 6.18 and 11.83 (68.3, 95.4 and 99.7 per cent for two parameters).
+
+    Parameters
+    ----------
+    result : dict
+        ``ef.nested_laplace_result``.
+    truth : dict, optional
+        ``{"log_mdot": ..., "inclination": ...}`` to mark (synthetic data).
+    optimum : dict, optional
+        ``ef.optimum`` from ``.optimise()``, marked for comparison.
+    max_delta_bof : float
+        Colour scale ceiling.
+    """
+    names = list(result["names"])
+    if names[:2] != ["log_mdot", "cos_inclination"]:
+        raise ValueError(f"plot_landscape needs log_mdot and cos_inclination gridded first, got {names}")
+    if len(names) > 2:
+        warnings.warn("plot_landscape: more than two gridded parameters; showing the best slice of the rest.")
+
+    def as_2d(logp):
+        logp = np.asarray(logp, dtype=float)
+        while logp.ndim > 2:
+            logp = np.nanmax(np.where(np.isfinite(logp), logp, -np.inf), axis=-1)
+        return logp
+
+    def edges(centres):
+        c = np.asarray(centres, dtype=float)
+        w = c[1] - c[0] if len(c) > 1 else 1.0
+        return np.concatenate([c - 0.5 * w, [c[-1] + 0.5 * w]])
+
+    panels = [(result["passes"][0]["axes"], as_2d(result["passes"][0]["logp"]), "Scout grid: the prior range"),
+              (result["fine_axes"], as_2d(result["fine_logp"]), "Final grid: the posterior")]
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    levels = [2.30, 6.18, 11.83]
+    for ax, (grid_axes, logp, title) in zip(axes, panels):
+        y_view = None
+        finite = np.isfinite(logp)
+        dbof = np.where(finite, -2.0 * (logp - np.max(logp[finite])), np.nan)
+        lm_edges = edges(grid_axes[0])
+        cos_edges = np.clip(edges(grid_axes[1]), -1.0, 1.0)
+        inc_edges = np.rad2deg(np.arccos(cos_edges))
+        mesh = ax.pcolormesh(inc_edges, lm_edges, np.clip(dbof, 0, max_delta_bof), cmap="Blues_r",
+                             vmin=0, vmax=max_delta_bof, shading="flat", rasterized=True)
+        inc_c = np.rad2deg(np.arccos(np.clip(np.asarray(grid_axes[1], dtype=float), -1, 1)))
+        widths = [2.2, 1.4, 0.8]
+        if title.startswith("Final") and np.sum(finite) > 3:
+            ax.contour(inc_c, np.asarray(grid_axes[0], dtype=float), dbof, levels=levels,
+                       colors="#eb6834", linewidths=widths, zorder=3)
+        else:
+            # The scout grid spans the whole prior range: show only the rows
+            # (log_mdot) with any colour, plus one cell either side.
+            used = np.where(np.any(dbof < max_delta_bof, axis=1))[0]
+            if len(used):
+                lo, hi = max(used[0] - 1, 0), min(used[-1] + 2, len(lm_edges) - 1)
+                y_view = (lm_edges[lo], lm_edges[hi])
+        if truth:
+            ax.plot(truth["inclination"], truth["log_mdot"], marker="*", ms=14, color="black", mec="white",
+                    mew=1.0, ls="none", zorder=5, label="truth")
+        if optimum is not None:
+            ax.plot(float(np.asarray(optimum["inclination"])), float(np.asarray(optimum["log_mdot"])), marker="X",
+                    ms=10, color="#e34948", mec="white", mew=1.0, ls="none", zorder=5, label="optimise() peak")
+        ax.set_xlim(inc_edges.min(), inc_edges.max())
+        ax.set_ylim(*(y_view or (lm_edges.min(), lm_edges.max())))
+        ax.set_xlabel("inclination (degrees)")
+        ax.set_ylabel("log_mdot")
+        ax.set_title(title)
+        ax.grid(alpha=0.6)
+    fig.colorbar(mesh, ax=axes, label="Delta BOF (= -2 Delta log posterior)", shrink=0.9)
+    handles = [plt.Line2D([], [], color="#eb6834", lw=w, label=l) for w, l in zip(widths, ("68%", "95%", "99.7%"))]
+    handles += [h for h in axes[1].get_legend_handles_labels()[0]]
+    axes[1].legend(handles=handles, loc="upper left", frameon=True, fontsize=8)
     return fig, axes

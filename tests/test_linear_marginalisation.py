@@ -24,10 +24,11 @@ def _small_echofit(with_driver=True, fit_error_model=False, fixed_params=None, *
         t = np.sort(rng.uniform(0.0, 60.0, 15))
         ef.add_lightcurve(
             name, wavelength=wav, t=t, y=rng.normal(1.0, 0.5, 15), yerr=np.full(15, 0.1),
-            fit_error_model=fit_error_model,
+            fit_error_model=fit_error_model, background_order=0,  # backgrounds: test_extra_components.py
         )
     if with_driver:
-        ef.add_driver_lightcurve(t=np.sort(rng.uniform(0.0, 60.0, 12)), y=rng.normal(size=12), yerr=np.full(12, 0.2))
+        ef.add_driver_lightcurve(t=np.sort(rng.uniform(0.0, 60.0, 12)), y=rng.normal(size=12), yerr=np.full(12, 0.2),
+                                 background_order=0)
     ef.build_grid(n_freq=10, n_tau=80)
     return ef
 

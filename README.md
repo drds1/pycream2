@@ -274,8 +274,8 @@ pycream2/
     responses.py         a small registry (register_response/get_response) for
                           swapping in a built-in or custom physical response
     model.py            NumPyro model (reverberation_model) + DRW prior scale
-    grid_utils.py        estimate_dt_min: robust cadence estimate shared by
-                          EchoFit.build_grid() and synthetic.py
+    grid_utils.py        hybrid_frequency_grid (build_grid()'s driver frequencies),
+                          estimate_dt_min (robust cadence estimate, shared with synthetic.py)
     inference.py         run_mcmc / run_mcmc_chunked: NUTS wrapper (the
                           latter supports checkpointing/resuming)
     echofit.py           EchoFit: main user-facing class
@@ -454,7 +454,7 @@ ef = EchoFit(M_BH=1e8)
 for name, d in data["bands"].items():
     ef.add_lightcurve(name, wavelength=d["wavelength"], t=d["t"], y=d["y"], yerr=d["yerr"])
 
-ef.build_grid(n_freq=60, n_tau=400)
+ef.build_grid()             # driver frequencies up to 2 cycles/day, a 400-point lag grid
 ef.fit(rng_seed=0, num_warmup=500, num_samples=500)
 
 ef.plot_raw_lightcurves()
@@ -936,7 +936,9 @@ curve. Full motivation, mathematics, priors and a synthetic recovery study:
   (Welsh 1999; Edelson et al. 2024 detrended Fairall 9's light curves with a
   parabola). `background_order=K` adds `K` Legendre polynomials in time to
   that light curve's constant offset, fitted jointly with everything else
-  rather than subtracted beforehand.
+  rather than subtracted beforehand. Every light curve has a linear one
+  (`background_order=1`) by default since October 2026, for trends longer
+  than the driver's longest period; `background_order=0` removes it.
   - The coefficients are `bg_{band}`, or `bg_driver` for the driver.
   - They are linear, so `optimise()` and `marginalise_linear=True` integrate
     them out exactly.
@@ -951,7 +953,7 @@ print(ef.log_evidence)  # Laplace evidence: compare with and without a component
 ```
 
 From the command line, add `--diffuse-continuum [BAND ...]` (all bands if
-none are named) or `--background-order K` to `scripts/fit_lightcurves.py`.
+none are named) or `--background-order K` (default 1) to `scripts/fit_lightcurves.py`.
 `plot_lightcurve_fits()` shows both components: the response panel shows the
 mixed response, and the model curves include the background.
 

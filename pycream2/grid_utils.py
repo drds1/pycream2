@@ -69,6 +69,44 @@ def estimate_dt_min(
     return dt_min
 
 
+def hybrid_frequency_grid(period_max: float, f_max: float, log_step: float) -> np.ndarray:
+    """Driver angular frequencies, linear at low frequency and logarithmic above.
+
+    Starts at ``w_1 = 2 pi / period_max`` and steps by
+    ``max(2 pi / period_max, log_step * w)`` up to ``2 pi f_max``: harmonics
+    of the longest period (CREAM's grid, Starkey et al. 2016) while
+    ``log_step * w`` is smaller than their spacing, then a constant fractional
+    step. A window of length ``period_max`` holds about one independent pair of
+    Fourier coefficients per ``1 / period_max`` of bandwidth, so linear spacing
+    is the natural basis; finer low-frequency spacing only adds near-duplicate
+    modes. At high frequency the echoes are smoothed by the response and don't
+    resolve individual harmonics: there a log grid at ``log_step = 0.03`` gave
+    the same posteriors as linear spacing on the CREAM paper's synthetic tests,
+    with far fewer modes (linear spacing to 2 cycles/day needs
+    ``2 period_max`` modes, ~1700 for an NGC 5548-length campaign).
+
+    Parameters
+    ----------
+    period_max : float
+        Longest driver period (days).
+    f_max : float
+        Highest driver frequency, cycles per day.
+    log_step : float
+        Fractional frequency step in the logarithmic part.
+    """
+    if period_max <= 0 or f_max <= 0 or log_step <= 0:
+        raise ValueError("period_max, f_max and log_step must all be positive")
+    dw = 2.0 * np.pi / period_max
+    w_max = 2.0 * np.pi * f_max
+    freqs = [dw]
+    while True:
+        w = freqs[-1] + max(dw, log_step * freqs[-1])
+        if w > w_max * (1.0 + 1e-9):
+            break
+        freqs.append(w)
+    return np.asarray(freqs)
+
+
 def graded_tau_grid(tau_max: float, n_tau: int, power: float = 3.0) -> np.ndarray:
     """A lag grid concentrated near ``tau=0`` rather than uniformly spaced:
     ``tau_grid = tau_max * linspace(0, 1, n_tau) ** power``.

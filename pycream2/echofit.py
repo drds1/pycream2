@@ -33,7 +33,7 @@ from .forward_model import (
     transfer_coeffs, compute_echo, driver_at, tophat_response_free, transfer_matrices, fourier_basis,
     legendre_background_basis, mix_diffuse_continuum,
 )
-from .grid_utils import estimate_dt_min, graded_tau_grid, check_tau_grid_resolution
+from .grid_utils import estimate_dt_min, graded_tau_grid, check_tau_grid_resolution, hybrid_frequency_grid
 from . import disc_sed
 from . import plotting
 from . import reporting
@@ -44,6 +44,15 @@ _UNSET = object()
 # build_grid()'s default longest driver period, as a multiple of the window the
 # driver must cover (baseline + tau_max); see its period_max docstring.
 PERIOD_MAX_FACTOR = 2.0
+
+# build_grid()'s default highest driver frequency (cycles per day) and the
+# fractional step of the grid's logarithmic part; see its f_max docstring.
+F_MAX_CYCLES_PER_DAY = 2.0
+FREQ_LOG_STEP = 0.03
+
+# add_lightcurve()/add_driver_lightcurve()'s default background order: a linear
+# trend in every light curve, for trends longer than the driver's longest period.
+DEFAULT_BACKGROUND_ORDER = 1
 
 
 # optimise()'s multi-start check: a restart "agrees" with the best optimum if
@@ -262,7 +271,8 @@ class EchoFit:
     # ------------------------------------------------------------------
     def add_lightcurve(
         self, name: str, wavelength: float, t, y, yerr, lag_mode: str = "physical",
-        fit_error_model: bool = False, diffuse_continuum: bool = False, background_order: int = 0,
+        fit_error_model: bool = False, diffuse_continuum: bool = False,
+        background_order: int = DEFAULT_BACKGROUND_ORDER,
     ):
         """Register a single band's (possibly irregularly sampled) light curve.
 
@@ -303,15 +313,20 @@ class EchoFit:
             days) and ``dce_width_{name}`` (rms width, dex). See
             ``docs/extra_components.md``.
         background_order : int
-            ``0`` (default) keeps this band's constant offset ``C_{name}`` as
-            its only non-reverberating part. ``K > 0`` adds a slowly varying
-            background, Legendre polynomials ``P_1 .. P_K`` in time over the
-            whole campaign with coefficients ``bg_{name}`` (a length-``K``
-            vector), for variability unrelated to reverberation, such as a
-            slowly changing host or narrow-line contribution or a long-term
-            trend (cf. detrending, Welsh 1999). Linear, so ``optimise()`` and
-            ``marginalise_linear=True`` integrate it out exactly. ``1`` or ``2``
-            is usually enough; see ``docs/extra_components.md``.
+            A slowly varying background, Legendre polynomials ``P_1 .. P_K`` in
+            time over the whole campaign with coefficients ``bg_{name}`` (a
+            length-``K`` vector), on top of the constant offset ``C_{name}``,
+            for variability unrelated to reverberation, such as a slowly
+            changing host or narrow-line contribution or a long-term trend (cf.
+            detrending, Welsh 1999). Linear, so ``optimise()`` and
+            ``marginalise_linear=True`` integrate it out exactly. Defaults to
+            ``1`` (a linear trend, ``DEFAULT_BACKGROUND_ORDER``): a red-noise
+            driver has trends longer than the driver's longest period, which
+            otherwise leak into the response (on the CREAM paper's synthetic
+            random-walk tests they pulled ``log_mdot`` towards high values at
+            SNR 100; on data without such trends the term changed nothing).
+            ``0`` keeps ``C_{name}`` as the only non-reverberating part (the
+            default until October 2026); see ``docs/extra_components.md``.
         """
         if lag_mode not in ("physical", "free"):
             raise ValueError(f"lag_mode must be 'physical' or 'free', got {lag_mode!r}")
@@ -332,7 +347,8 @@ class EchoFit:
         return self
 
     # ------------------------------------------------------------------
-    def add_driver_lightcurve(self, t, y, yerr, fit_error_model: bool = False, background_order: int = 0):
+    def add_driver_lightcurve(self, t, y, yerr, fit_error_model: bool = False,
+                              background_order: int = DEFAULT_BACKGROUND_ORDER):
         """Register a light curve that directly (zero-lag) observes the
         driver itself -- e.g. an X-ray/lamppost continuum, or a directly
         monitored AGN continuum anchoring an emission-line fit. Modelled as
@@ -349,8 +365,8 @@ class EchoFit:
             Same meaning as ``add_lightcurve``'s: off by default, turns on
             ``sigma_scale_driver``/``sigma_jitter_driver`` if ``True``.
         background_order : int
-            Same meaning as ``add_lightcurve``'s: ``K > 0`` adds a slow
-            Legendre background with coefficients ``bg_driver``.
+            Same meaning, and default, as ``add_lightcurve``'s: ``K > 0`` adds
+            a slow Legendre background with coefficients ``bg_driver``.
         """
         if int(background_order) < 0:
             raise ValueError(f"background_order must be >= 0, got {background_order!r}")
@@ -366,20 +382,28 @@ class EchoFit:
     # ------------------------------------------------------------------
     def build_grid(
         self,
-        n_freq: int = 60,
+        n_freq: Optional[int] = None,
         n_tau: int = 400,
         tau_max: Optional[float] = None,
         dt_min: Optional[float] = None,
         tau_grid_power: float = 3.0,
         period_max: Optional[float] = None,
+        f_max: float = F_MAX_CYCLES_PER_DAY,
+        log_step: float = FREQ_LOG_STEP,
     ):
         """Build the shared driver-frequency grid and lag grid from the
         currently registered light curves.
 
         Parameters
         ----------
-        n_freq : int
-            Number of driver Fourier frequencies.
+        n_freq : int, optional
+            Asks for the pre-October-2026 grid instead of the default one:
+            ``n_freq`` log-spaced frequencies from ``2 pi / period_max`` to
+            ``pi / dt_min`` (``dt_min`` estimated from the cadence if not
+            given). Useful for small, fast fits (tests, demos). Leave unset for
+            the default grid, whose size follows from ``period_max``, ``f_max``
+            and ``log_step``: harmonics of ``period_max`` at low frequency, then
+            log spacing (:func:`~pycream2.grid_utils.hybrid_frequency_grid`).
         n_tau : int
             Number of points on the lag grid used to evaluate/integrate psi.
         tau_max : float, optional
@@ -396,13 +420,24 @@ class EchoFit:
             error). ``1.0`` recovers the original uniform grid.
         dt_min : float, optional
             Finest timescale (days) the driver's Fourier series should
-            resolve; sets the frequency grid's upper bound
-            ``w_max = pi / dt_min``. Defaults to a robust (5th-percentile)
-            estimate from the registered light curves' observation gaps
-            via :func:`~pycream2.grid_utils.estimate_dt_min` -- pass this
-            explicitly if you want direct control (e.g. to match a known
-            cadence) rather than relying on the data-driven estimate, which
-            can be noisy for sparse or highly irregular sampling.
+            resolve; if given, sets the upper bound ``w_max = pi / dt_min`` in
+            place of ``f_max``. With ``n_freq`` and no ``dt_min``, the old
+            grid's upper bound is estimated from the observation gaps
+            (5th percentile, :func:`~pycream2.grid_utils.estimate_dt_min`).
+        f_max : float
+            Highest driver frequency, cycles per day (default 2, i.e. a
+            0.5-day period). An absolute default rather than one from the
+            cadence: the echoes carry the driver's variability down to the
+            sharpest feature of the response, its rise near zero lag, and at
+            high SNR the data resolve it. The earlier cadence-based default (a
+            1.6-day period for daily sampling) under-fitted the CREAM paper's
+            high-SNR synthetic data (log posterior up to ~530 lower) and
+            biased SNR-100 fits towards high inclination and accretion rate.
+            Raise it for black holes much lighter than ~1e7 Msun, whose
+            responses rise within hours.
+        log_step : float
+            Fractional frequency step of the grid's logarithmic part (default
+            0.03). Smaller steps add modes at high frequency.
         period_max : float, optional
             Longest driver period (days); sets the frequency grid's lower
             bound ``w_min = 2 pi / period_max``. Defaults to twice the
@@ -425,16 +460,19 @@ class EchoFit:
             all_t_arrays.append(self.driver_data["t"])
         all_t = np.concatenate(all_t_arrays)
         t_span = all_t.max() - all_t.min()
-        if dt_min is None:
-            dt_min = estimate_dt_min(all_t_arrays, t_span=t_span)
 
         if tau_max is None:
             tau_max = 0.5 * t_span
         if period_max is None:
             period_max = PERIOD_MAX_FACTOR * (t_span + tau_max)
-        w_min = 2.0 * np.pi / period_max
-        w_max = np.pi / dt_min
-        self.freqs = jnp.asarray(np.geomspace(w_min, w_max, n_freq))
+        if n_freq is not None:
+            if dt_min is None:
+                dt_min = estimate_dt_min(all_t_arrays, t_span=t_span)
+            self.freqs = jnp.asarray(np.geomspace(2.0 * np.pi / period_max, np.pi / dt_min, n_freq))
+        else:
+            if dt_min is not None:
+                f_max = 0.5 / dt_min  # w_max = pi / dt_min
+            self.freqs = jnp.asarray(hybrid_frequency_grid(period_max, f_max, log_step))
 
         self.tau_grid = jnp.asarray(graded_tau_grid(tau_max, n_tau, power=tau_grid_power))
         for message in check_tau_grid_resolution(self.tau_grid, self.bands, self.M_BH):

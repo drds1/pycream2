@@ -117,10 +117,10 @@ def _parse_args():
              "see docs/extra_components.md.",
     )
     parser.add_argument(
-        "--background-order", type=int, default=0,
-        help="Add a slowly varying background of this many Legendre terms to every light curve "
-             "(and the driver), for variability unrelated to reverberation. 0 (default) is off; "
-             "see docs/extra_components.md.",
+        "--background-order", type=int, default=1,
+        help="Slowly varying background of this many Legendre terms in every light curve "
+             "(and the driver), for trends and variability unrelated to reverberation. 1 (default) "
+             "is a linear trend, 0 turns it off; see docs/extra_components.md.",
     )
 
     parser.add_argument("--title", default=None, help="Run name -- enables checkpointed/resumable output management.")
@@ -193,7 +193,11 @@ def _parse_args():
     parser.add_argument("--report-every", type=int, default=None, help="Only used with --title -- refresh report.html every this many new samples.")
     parser.add_argument("--no-progress-bar", action="store_true")
 
-    parser.add_argument("--n-freq", type=int, default=None, help="Driver Fourier frequencies (default: build_grid()'s own default).")
+    parser.add_argument("--n-freq", type=int, default=None,
+                        help="Use the old log-spaced driver grid with this many frequencies (default: "
+                             "build_grid()'s own grid, sized from the baseline and --f-max).")
+    parser.add_argument("--f-max", type=float, default=None,
+                        help="Highest driver frequency, cycles per day (default: build_grid()'s, 2).")
     parser.add_argument("--n-tau", type=int, default=None, help="Lag grid points (default: build_grid()'s own default).")
     parser.add_argument("--tau-max", type=float, default=None, help="Maximum lag, days (default: half the observed time baseline).")
 
@@ -245,6 +249,8 @@ def main():
     build_grid_kwargs = {}
     if args.n_freq is not None:
         build_grid_kwargs["n_freq"] = args.n_freq
+    if args.f_max is not None:
+        build_grid_kwargs["f_max"] = args.f_max
     if args.n_tau is not None:
         build_grid_kwargs["n_tau"] = args.n_tau
     if args.tau_max is not None:

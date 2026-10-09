@@ -271,7 +271,7 @@ def test_optimise_laplace_matches_nuts():
             ef.add_lightcurve(name, wavelength=d["wavelength"], t=d["t"], y=d["y"], yerr=d["yerr"])
         ef.build_grid(n_freq=30, n_tau=200)
         if direct:
-            ef.optimise(restart_scale=1.0, method="laplace")
+            ef.optimise(num_restarts=4, restart_scale=1.0, method="laplace")
             # Real light curves: every restart, from widely spread starts,
             # must reach the same optimum.
             assert ef.optimise_timings["restarts_agreeing"] == 4

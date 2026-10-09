@@ -1205,6 +1205,36 @@ match; `pycream2.__version__` reads the installed metadata);
     - Not yet re-run on the full 10-driver sets or real data. Earlier fits (NGC 5548, Fairall 9, the
       recovery grid, the CREAM-paper reproduction) used the old grid and no background.
 
+30. **`optimise(method="laplace")` in ~15 s instead of ~220 s on a 2-band synthetic set (CREAM case A),
+    same posterior (October 2026, a direct request: "optimise should solve the entire problem in seconds").**
+    Profiled first (`experiments/optimise_speed/`, untracked: stage windows plus JAX compile events); ~85 per
+    cent of the time was overhead, not computation. Changes, each measured:
+    - **Linear draws are lazy** (`_set_lazy_linear_draws`, `_LazySamples`, `_LinearDraws`): after a direct
+      solve `ef.samples`/`_samples_by_chain` hold the nonlinear parameters at once, and the exact linear
+      draws (`S_raw`, `C_raw`, `S`, `C`, `C_{band}`, `bg_*`, `y_pred_*`) are made on the first read of one of
+      them or anything that walks the dict (plots, reports, saving), once for both dicts. They were the
+      biggest cost: ~17 ms per sample even compiled (a QR solve each), and eagerly dispatched they took
+      63-133 s for 1000. `_add_linear_draws` now also compiles its Predictive call (3-8x faster when
+      drawn; vectorising instead was no faster on CPU). `.fit()` still draws eagerly.
+    - **Hessian by finite differences of the compiled gradient** (`_fd_hessian`), not `jax.hessian` (~25 s to
+      compile for a 0.6 s evaluation). **Measured along the eigenvectors, not just the axes**: the
+      driver-amplitude/band-gain ridge (decision #13) makes curvatures differ ~3e4-fold, and a coordinate-axis
+      float32 Hessian made those posterior widths ~40 per cent too wide; along the eigenvectors every width
+      matches the exact Hessian to <2 per cent (CREAM case A and NGC 5548). Steps are 0.1 posterior sd.
+    - **Set-up**: `initialize_model(validate_grad=False)` (`_initialize_marginal_model`); its eager gradient
+      check compiled ~280 tiny one-off operations (~20 s). And `model._marginal_solve` /
+      `model._call_response` wrap the marginal solve and the response call in one `jax.jit` each, so
+      NumPyro's eager model pass compiles 56 operations instead of 174 (inlined inside the jitted potential;
+      the per-gradient cost is unchanged at ~42 ms). `_call_response` traces the wavelength (one compile for
+      all bands) and falls back to a direct call for a response that can't take a traced wavelength.
+    - **One restart by default for `method="laplace"`** (author's decision; `num_restarts=4` restores the
+      multi-start check). The nested solve keeps 4.
+    - The curvature check evaluates the potential point by point through a plain jitted potential, not a
+      separately compiled `vmap` of it (~4 s).
+    Still left: compiling the gradient (~4.5 s) and the eager set-up (~6 s) dominate; a persistent JAX
+    compilation cache would remove most of both for repeat fits on the same data. The nested solve (the
+    default) shares these fixes but still takes minutes. Laptop timings vary up to ~2x between identical runs.
+
 ## Known rough edges / things to check before trusting results on real data
 
 - `synthetic.py`'s ground truth is generated with the *same* forward model

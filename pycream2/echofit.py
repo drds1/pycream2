@@ -127,6 +127,149 @@ def _merge_dicts(dicts) -> dict:
     return {k: np.concatenate([d[k] for d in dicts], axis=0) for k in dicts[0]}
 
 
+def _initialize_marginal_model(rng_seed, kwargs, init_strategy):
+    """NumPyro's ``initialize_model`` for the marginal model, without its
+    eager gradient check (``validate_grad=False``): run eagerly, that gradient
+    compiled ~280 small one-off operations (~20 s on a 5-parameter problem).
+    The solvers evaluate the compiled gradient at the start straight away and
+    handle a non-finite one."""
+    from numpyro.infer.util import initialize_model
+
+    return initialize_model(jax.random.PRNGKey(rng_seed), reverberation_model, model_kwargs=kwargs,
+                            init_strategy=init_strategy, validate_grad=False)
+
+
+def _lbfgs_sd(result) -> np.ndarray:
+    """Per-parameter posterior scale from L-BFGS-B's inverse-Hessian estimate,
+    or ones if it has none."""
+    try:
+        return np.sqrt(np.clip(np.diag(result.hess_inv.todense()), 1e-12, None))
+    except AttributeError:
+        return np.ones(np.size(result.x))
+
+
+def _fd_hessian(grad, z, sd=None, basis=None, frac: float = 0.1):
+    """Hessian by central differences of the (compiled) gradient, with nothing
+    new to compile (``jax.hessian`` of the marginal potential took ~25 s to
+    compile for a 0.6 s evaluation). Returns ``(H, vals, vecs)``, ``H``
+    symmetric and ``vals, vecs`` its eigen-decomposition.
+
+    Measured along the eigenvectors of ``basis`` (a previous ``(vals, vecs)``),
+    each with a step of ``frac`` of that direction's own posterior standard
+    deviation: ``2 d`` gradient calls. Without a basis, a first pass along the
+    coordinate axes (steps ``frac * sd``) supplies one, and the eigenbasis pass
+    follows (``4 d`` calls). The second pass matters: the driver-amplitude/
+    band-gain ridge (CLAUDE.md decision #13) makes curvatures differ by ~1e4-1e5
+    between directions, and float32 errors of a coordinate-axis Hessian swamp
+    the ridge's small eigenvalue (posterior widths up to 40 per cent off on
+    CREAM case A; along the eigenvectors they match the exact Hessian). A step
+    on the posterior's own scale also smooths over the thin-disc potential's
+    tiny ripples, as the curvature check (``_posterior_scale_curvature``) does."""
+    z = np.asarray(z, dtype=np.float64)
+    d = z.size
+
+    def g(x):
+        return np.asarray(grad(x), dtype=np.float64)
+
+    def along(directions, steps):
+        cols = [(g(z + s * v) - g(z - s * v)) / (2 * s) for v, s in zip(directions.T, steps)]
+        return np.stack(cols, axis=1)  # column k: H @ direction_k
+
+    if basis is None:
+        steps = np.clip(frac * np.asarray(sd if sd is not None else np.ones(d), dtype=np.float64), 1e-5, 1.0)
+        h = along(np.eye(d), steps)
+        basis = np.linalg.eigh(0.5 * (h + h.T))
+    vals, vecs = basis
+    steps = np.clip(frac / np.sqrt(np.clip(np.abs(vals), 1e-12, None)), 1e-5, 1.0)
+    b = vecs.T @ along(vecs, steps)  # the Hessian in the eigenbasis
+    h = vecs @ (0.5 * (b + b.T)) @ vecs.T
+    h = 0.5 * (h + h.T)
+    vals, vecs = np.linalg.eigh(h)
+    return h, vals, vecs
+
+
+class _LinearDraws:
+    """Makes a direct solve's exact linear draws once, on first request (see
+    ``EchoFit._set_lazy_linear_draws``), shared by both lazy sample dicts."""
+
+    def __init__(self, ef, nonlinear_by_chain, rng_seed, sites):
+        self._ef, self._nonlinear, self._seed, self.sites = ef, nonlinear_by_chain, rng_seed, set(sites)
+        self._drawn = None
+
+    def get(self) -> dict:
+        if self._drawn is None:
+            ef = self._ef
+            was_marginal = ef.marginalise_linear
+            ef.marginalise_linear = True
+            try:
+                self._drawn = ef._add_linear_draws(self._nonlinear, self._seed)
+            finally:
+                ef.marginalise_linear = was_marginal
+        return self._drawn
+
+
+class _LazySamples(dict):
+    """A posterior-sample dict whose linear sites are drawn on first use.
+    ``d[name]`` and ``name in d`` for a parameter already present cost
+    nothing; reading a pending linear site, or anything that walks the whole
+    dict (iteration, ``keys``/``values``/``items``, ``len``, ``copy``, ``dict(d)``,
+    ``np.savez(**d)``), draws them first."""
+
+    def __init__(self, data, resolver, by_chain):
+        super().__init__(data)
+        self._resolver, self._by_chain = resolver, by_chain
+
+    def _fill(self):
+        if self._resolver is not None:
+            resolver, self._resolver = self._resolver, None
+            drawn = resolver.get()
+            dict.update(self, {k: (v if self._by_chain else v[0]) for k, v in drawn.items()
+                               if not dict.__contains__(self, k)})
+
+    def __getitem__(self, key):
+        if not dict.__contains__(self, key) and self._resolver is not None and key in self._resolver.sites:
+            self._fill()
+        return dict.__getitem__(self, key)
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or (self._resolver is not None and key in self._resolver.sites)
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __iter__(self):
+        self._fill()
+        return dict.__iter__(self)
+
+    def __len__(self):
+        self._fill()
+        return dict.__len__(self)
+
+    def keys(self):
+        self._fill()
+        return dict.keys(self)
+
+    def values(self):
+        self._fill()
+        return dict.values(self)
+
+    def items(self):
+        self._fill()
+        return dict.items(self)
+
+    def copy(self):
+        self._fill()
+        return dict(dict.items(self))
+
+    def __repr__(self):
+        self._fill()
+        return dict.__repr__(self)
+
+    def __reduce__(self):
+        self._fill()
+        return (dict, (dict(dict.items(self)),))
+
+
 class EchoFit:
     """Bayesian AGN reverberation-mapping fit for multi-band light curves.
 
@@ -960,7 +1103,7 @@ class EchoFit:
         return self
 
     def optimise(
-        self, num_samples: int = 1000, num_restarts: int = 4, rng_seed: int = 0,
+        self, num_samples: int = 1000, num_restarts: Optional[int] = None, rng_seed: int = 0,
         restart_scale: float = 0.5, method: str = "nested_laplace", **nested_kwargs,
     ):
         """Directly solve for the posterior, without MCMC.
@@ -971,14 +1114,18 @@ class EchoFit:
         importance sampling. It follows a curved ridge or a second mode,
         which a single Gaussian cannot; see ``docs/nested_laplace.md``.
         ``nested_kwargs`` are passed to it, as are ``num_restarts`` and
-        ``restart_scale`` (random restarts of its mode search).
+        ``restart_scale`` (random restarts of its mode search; default 4).
 
         ``method="laplace"`` is the original single-Gaussian solve (the
         default before), described below, with its multi-start check
         (``optimise_restarts``). It is faster (by 1.4-1.8x on the synthetic
         cases measured) and exact for a Gaussian posterior, but understated
-        the uncertainty up to six-fold on weakly constraining data.
+        the uncertainty up to six-fold on weakly constraining data. It runs one
+        optimisation by default; ``num_restarts=4`` adds the multi-start
+        reproducibility check.
         """
+        if num_restarts is None:
+            num_restarts = 4 if method == "nested_laplace" else 1
         if method == "nested_laplace":
             return self.nested_laplace(num_samples=num_samples, rng_seed=rng_seed, num_restarts=num_restarts,
                                        restart_scale=restart_scale, **nested_kwargs)
@@ -990,7 +1137,7 @@ class EchoFit:
                                       restart_scale=restart_scale)
 
     def _optimise_laplace(
-        self, num_samples: int = 1000, num_restarts: int = 4, rng_seed: int = 0,
+        self, num_samples: int = 1000, num_restarts: int = 1, rng_seed: int = 0,
         restart_scale: float = 0.5,
     ):
         """``optimise(method="laplace")``. Directly solve for the posterior, without MCMC: maximise the
@@ -1066,7 +1213,9 @@ class EchoFit:
             Optimisations, from the data-anchored initial point
             (``_init_strategy``) plus ``num_restarts - 1`` random
             perturbations of it; the best is kept. Guards against a local
-            optimum, and measures reproducibility (above).
+            optimum, and measures reproducibility (above). Default 1 (since
+            October 2026, for speed: each restart costs a full optimisation);
+            pass 4 or more for the reproducibility check.
         rng_seed : int
             Seeds the restart perturbations and the Laplace/linear draws.
         restart_scale : float
@@ -1075,7 +1224,7 @@ class EchoFit:
             reproducibility test from more widely spread starting points.
         """
         from jax.flatten_util import ravel_pytree
-        from numpyro.infer.util import constrain_fn, initialize_model
+        from numpyro.infer.util import constrain_fn
         from scipy.optimize import minimize
 
         if self.freqs is None or self.tau_grid is None:
@@ -1083,10 +1232,7 @@ class EchoFit:
         self._validate_before_fit()
 
         kwargs = dict(self._model_kwargs(), marginalise_linear=True)
-        info = initialize_model(
-            jax.random.PRNGKey(rng_seed), reverberation_model, model_kwargs=kwargs,
-            init_strategy=self._init_strategy(1),
-        )
+        info = _initialize_marginal_model(rng_seed, kwargs, self._init_strategy(1))
         z0, unravel = ravel_pytree(info.param_info.z)
         potential = lambda z: info.potential_fn(unravel(z))
         value_and_grad = jax.jit(jax.value_and_grad(potential))
@@ -1128,19 +1274,26 @@ class EchoFit:
         # just the lowest, so the restarts can be compared at their true optima
         # and the best is chosen after polishing.
         t0 = time.perf_counter()
-        hessian_fn = jax.jit(jax.hessian(potential))
-        batch_potential_jit = jax.jit(jax.vmap(potential))
+        # The curvature check needs ~2 potential values per parameter: one at a
+        # time through a plain compiled potential, not jax.vmap's batched one,
+        # whose separate compilation cost ~4 s for a 5-parameter problem.
+        potential_jit = jax.jit(potential)
         corrections = {}
+        # Finite-difference Hessians (_fd_hessian): the first pass's steps from
+        # L-BFGS's own inverse-Hessian estimate, later ones along the previous
+        # Hessian's eigenvectors.
+        scale = {"sd": _lbfgs_sd(min((r for r in results if np.isfinite(r.fun)), key=lambda r: r.fun, default=results[0])),
+                 "basis": None}
 
         def batch_potential(points):
-            return batch_potential_jit(jnp.asarray(points, dtype=z0.dtype))
+            return np.array([float(potential_jit(jnp.asarray(x, dtype=z0.dtype))) for x in np.atleast_2d(points)])
 
         def curvature(z, posterior_scale=False):
             # posterior_scale: check each eigenvalue over one posterior sd
             # (_posterior_scale_curvature); ~2 potential evaluations per
             # parameter, so only at each polished optimum, not every Newton step.
-            h = np.asarray(hessian_fn(jnp.asarray(z, dtype=z0.dtype)), dtype=np.float64)
-            vals, vecs = np.linalg.eigh(0.5 * (h + h.T))
+            _, vals, vecs = _fd_hessian(lambda x: objective(x)[1], z, sd=scale["sd"], basis=scale["basis"])
+            scale["basis"] = (vals, vecs)
             if posterior_scale:
                 f0 = float(batch_potential(np.asarray(z)[None])[0])
                 vals, corrections["n"] = _posterior_scale_curvature(batch_potential, np.asarray(z), f0, vals, vecs)
@@ -1254,18 +1407,12 @@ class EchoFit:
 
         t0 = time.perf_counter()
         z_draws = rng.multivariate_normal(best.x, cov, size=num_samples).astype(np.asarray(z0).dtype)
-        constrained = jax.vmap(lambda z: constrain_fn(reverberation_model, (), kwargs, unravel(z), return_deterministic=True))(
-            jnp.asarray(z_draws)
-        )
+        constrained = jax.jit(jax.vmap(
+            lambda z: constrain_fn(reverberation_model, (), kwargs, unravel(z), return_deterministic=True)
+        ))(jnp.asarray(z_draws))
         nonlinear = {k: np.asarray(v)[None, ...] for k, v in constrained.items()}
 
-        was_marginal = self.marginalise_linear
-        self.marginalise_linear = True
-        try:
-            self._samples_by_chain = self._add_linear_draws(nonlinear, rng_seed)
-        finally:
-            self.marginalise_linear = was_marginal
-        self.samples = {k: v[0] for k, v in self._samples_by_chain.items()}
+        self._set_lazy_linear_draws(nonlinear, rng_seed)
         self.extra_fields, self._extra_fields_by_chain = {}, {}
         self.mcmc = None
 
@@ -1340,7 +1487,7 @@ class EchoFit:
             Random restarts of the mode search, perturbing the data-anchored
             start as ``optimise(method="laplace")`` does (same defaults).
         """
-        from numpyro.infer.util import constrain_fn, initialize_model
+        from numpyro.infer.util import constrain_fn
 
         from . import nested_laplace as _nl
 
@@ -1348,26 +1495,17 @@ class EchoFit:
             self.build_grid()
         self._validate_before_fit()
         kwargs = dict(self._model_kwargs(), marginalise_linear=True)
-        info = initialize_model(
-            jax.random.PRNGKey(rng_seed), reverberation_model, model_kwargs=kwargs,
-            init_strategy=self._init_strategy(1),
-        )
+        info = _initialize_marginal_model(rng_seed, kwargs, self._init_strategy(1))
         result = _nl.run(reverberation_model, kwargs, info, num_samples=num_samples, rng_seed=rng_seed,
                          grid_params=grid_params or _nl.DEFAULT_GRID_PARAMS, n_pass=n_pass, n_fine=n_fine,
                          drop=drop, num_restarts=num_restarts, restart_scale=restart_scale)
         t0 = time.perf_counter()
         unravel = result["unravel"]
-        constrained = jax.vmap(
+        constrained = jax.jit(jax.vmap(
             lambda z: constrain_fn(reverberation_model, (), kwargs, unravel(z), return_deterministic=True)
-        )(jnp.asarray(result["z"], dtype=result["dtype"]))
+        ))(jnp.asarray(result["z"], dtype=result["dtype"]))
         nonlinear = {k: np.asarray(v)[None, ...] for k, v in constrained.items()}
-        was_marginal = self.marginalise_linear
-        self.marginalise_linear = True
-        try:
-            self._samples_by_chain = self._add_linear_draws(nonlinear, rng_seed)
-        finally:
-            self.marginalise_linear = was_marginal
-        self.samples = {k: v[0] for k, v in self._samples_by_chain.items()}
+        self._set_lazy_linear_draws(nonlinear, rng_seed)
         self.extra_fields, self._extra_fields_by_chain = {}, {}
         self.mcmc = None
         result["timings"]["linear_draws_seconds"] = time.perf_counter() - t0
@@ -1459,6 +1597,29 @@ class EchoFit:
                 values[name] = np.asarray(trace[name]["value"])
         return values
 
+    def _linear_draw_sites(self) -> list:
+        """Site names :meth:`_add_linear_draws` adds."""
+        names = list(self.bands) + (["driver"] if self.driver_data is not None else [])
+        sites = ["S_raw", "C_raw", "S", "C"] + [f"y_pred_{n}" for n in names]
+        sites += [f"C_{n}" for n in names if f"C_{n}" not in self.fixed_params]
+        curves = dict(self.bands, **({"driver": self.driver_data} if self.driver_data is not None else {}))
+        sites += [f"bg_{n}" for n, d in curves.items() if d.get("background_order", 0)]
+        return sites
+
+    def _set_lazy_linear_draws(self, nonlinear_by_chain: dict, rng_seed: int):
+        """Set ``samples``/``_samples_by_chain`` after a direct solve, with the
+        exact linear draws (driver coefficients, offsets, backgrounds, model
+        light curves) made only when first needed: they cost ~17 ms per sample
+        on a 2-band set (a QR solve each), 17-30 s for 1000, more than the
+        rest of ``optimise(method="laplace")``. Reading a nonlinear parameter
+        (``ef.samples["log_mdot"]``) never triggers them; reading a linear one,
+        iterating the dict (every plot and report does) or saving it does,
+        once, for both dicts. They use the model as it is at that moment, so
+        don't change the bands or the response function in between."""
+        resolver = _LinearDraws(self, nonlinear_by_chain, rng_seed, self._linear_draw_sites())
+        self._samples_by_chain = _LazySamples(nonlinear_by_chain, resolver, by_chain=True)
+        self.samples = _LazySamples({k: v[0] for k, v in nonlinear_by_chain.items()}, resolver, by_chain=False)
+
     def _add_linear_draws(self, samples_by_chain: dict, rng_seed: int) -> dict:
         """With ``marginalise_linear``, NUTS never samples the driver's
         Fourier coefficients or the offsets. Draw them here, once per
@@ -1477,14 +1638,15 @@ class EchoFit:
 
         n_chains, n_draws = next(iter(samples_by_chain.values())).shape[:2]
         flat = {k: jnp.reshape(jnp.asarray(v), (-1,) + v.shape[2:]) for k, v in samples_by_chain.items()}
-        names = list(self.bands) + (["driver"] if self.driver_data is not None else [])
-        return_sites = ["S_raw", "C_raw", "S", "C"] + [f"y_pred_{n}" for n in names]
-        return_sites += [f"C_{n}" for n in names if f"C_{n}" not in self.fixed_params]
-        curves = dict(self.bands, **({"driver": self.driver_data} if self.driver_data is not None else {}))
-        return_sites += [f"bg_{n}" for n, d in curves.items() if d.get("background_order", 0)]
-        draws = Predictive(reverberation_model, posterior_samples=flat, return_sites=return_sites)(
-            jax.random.fold_in(jax.random.PRNGKey(rng_seed), 1), **self._model_kwargs(), draw_linear=True,
-        )
+        return_sites = self._linear_draw_sites()
+        # Compiled once and run sample by sample (Predictive's default, a
+        # lax.map): eagerly, every operation of every draw was dispatched and
+        # many compiled on their own, ~3-8x slower; vectorising the draws
+        # instead was no faster on CPU and needs memory for all of them at once.
+        model_kwargs = self._model_kwargs()
+        draw = jax.jit(lambda samples, key: Predictive(
+            reverberation_model, posterior_samples=samples, return_sites=return_sites)(key, **model_kwargs, draw_linear=True))
+        draws = draw(flat, jax.random.fold_in(jax.random.PRNGKey(rng_seed), 1))
         out = dict(samples_by_chain)
         for k, v in draws.items():
             out[k] = np.asarray(v).reshape((n_chains, n_draws) + v.shape[1:])

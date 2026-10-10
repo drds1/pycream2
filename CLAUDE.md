@@ -1239,6 +1239,13 @@ match; `pycream2.__version__` reads the installed metadata);
       **A scan of log_mdot and inclination for the start, with the other parameters held at their initial
       values, was tried and made it worse** (6 of 10 drivers into the wrong mode): scoring points without
       optimising the nuisance parameters misleads; doing it properly is the nested solve's scout grid.
+      **Evidence selection only among sound restarts** (follow-up fix): on a ugriz driver it picked an
+      *unconverged* restart (Newton offset 2e4 sd) whose finite-difference Hessian had an eigenvalue clipped
+      to the floor, i.e. a 1e8 variance and an inflated volume term (log M Mdot 18.5 +/- 529, ln Z 3 above
+      the nested solve's); all four restarts "agreed" because agreement is measured in those sd. Now only
+      restarts with Newton offset < 0.25 sd and a positive-definite Hessian compete on evidence (else the
+      lowest potential wins), and each restart's first Hessian uses its own L-BFGS scale instead of the
+      previous restart's eigenvectors, the likely source of the degenerate Hessian.
     - The curvature check evaluates the potential point by point through a plain jitted potential, not a
       separately compiled `vmap` of it (~4 s).
     Still left: compiling the gradient (~4.5 s) and the eager set-up (~6 s) dominate; a persistent JAX

@@ -1173,6 +1173,87 @@ match; `pycream2.__version__` reads the installed metadata);
     - Validated against nautilus nested sampling (`poetry install --with validation`, an optional group used
       only by the validation script) and on exact toy posteriors (`tests/test_nested_laplace.py`).
 
+29. **The driver frequency grid is harmonics, then log spacing, up to 2 cycles/day, and every light
+    curve has a linear background by default (`build_grid(f_max=2.0, log_step=0.03)`,
+    `grid_utils.hybrid_frequency_grid`, `DEFAULT_BACKGROUND_ORDER = 1`; October 2026, found by reproducing
+    Starkey, Horne & Villforth 2016's synthetic tests, `experiments/cream_paper/`, untracked).**
+    - **The upper frequency was too low.** The old default stopped at `pi / dt_min` from the cadence (a
+      1.6-day period for daily sampling). On the paper's high-SNR (~700) g+i data a finer grid (0.4-day
+      period) raised the log evidence by up to 531, and on SNR-100 random-walk-driver data it brought the
+      truth back inside the joint 95 per cent region on every tested driver (2 of 4 missed before; misses
+      drifted to high inclination and `log_mdot`). 1 cycle/day was as good as 2 on these tests; 2 is the
+      default at the author's request (configurable: `f_max`, or `dt_min` as before). It is absolute, not
+      from the cadence, because the echoes carry driver variability down to the response's rise time; a
+      black hole much lighter than ~1e7 Msun needs it raised.
+    - **Mode density matters as much as reach**: the old log grid stretched to 0.4 days with 60 modes
+      (`fine60`) was *worse* than the default (one fit collapsed, evidence down by up to ~300).
+    - **Linear spacing (CREAM's grid, `cream_f90.f90:8128`, `w = wlo + dw (iw - 1)`) gave the same
+      posteriors as log spacing at 3 per cent** (case A, three drivers: `log_mdot` within 0.005 dex,
+      evidence within 3), but costs `2 period_max` modes to 2 cycles/day: ~1700 for an NGC 5548-length
+      campaign, a marginal solve ~900x dearer (it scales as `(N + p) min(N, p)^2`). The hybrid keeps
+      harmonics where they are needed (no near-duplicate low-frequency modes) and log spacing above the
+      crossover (`log_step * w = 2 pi / period_max`): ~125 modes for the paper's 100-day tests, ~170 for
+      NGC 5548. `build_grid(n_freq=...)` still gives the old grid, for small fast fits (most tests use it).
+    - **Background:** with a random-walk driver at SNR 100, a linear background pulled `log_mdot` down
+      from the high basin (the trends beyond `period_max` otherwise leak into long, inclined responses);
+      on the paper's own (myfake-style, no trends beyond its 260-day period) driver it changed nothing but
+      widened errors slightly. The evidence did not reliably prefer it where it helped, hence a default,
+      not advice. `resume()` of a checkpoint saved without `background_order` keeps 0 (tested).
+    - **A residual high-SNR offset was noise, not the model:** case A drivers 1 and 2 sat 2.4-2.9 sd high
+      on every grid; refitted with fresh noise (same driver and sampling) they scattered around the truth
+      at the quoted width. They had been picked for missing.
+    - Not yet re-run on the full 10-driver sets or real data. Earlier fits (NGC 5548, Fairall 9, the
+      recovery grid, the CREAM-paper reproduction) used the old grid and no background.
+
+30. **`optimise(method="laplace")` in ~15 s instead of ~220 s on a 2-band synthetic set (CREAM case A),
+    same posterior (October 2026, a direct request: "optimise should solve the entire problem in seconds").**
+    Profiled first (`experiments/optimise_speed/`, untracked: stage windows plus JAX compile events); ~85 per
+    cent of the time was overhead, not computation. Changes, each measured:
+    - **Linear draws are lazy** (`_set_lazy_linear_draws`, `_LazySamples`, `_LinearDraws`): after a direct
+      solve `ef.samples`/`_samples_by_chain` hold the nonlinear parameters at once, and the exact linear
+      draws (`S_raw`, `C_raw`, `S`, `C`, `C_{band}`, `bg_*`, `y_pred_*`) are made on the first read of one of
+      them or anything that walks the dict (plots, reports, saving), once for both dicts. They were the
+      biggest cost: ~17 ms per sample even compiled (a QR solve each), and eagerly dispatched they took
+      63-133 s for 1000. `_add_linear_draws` now also compiles its Predictive call (3-8x faster when
+      drawn; vectorising instead was no faster on CPU). `.fit()` still draws eagerly.
+    - **Hessian by finite differences of the compiled gradient** (`_fd_hessian`), not `jax.hessian` (~25 s to
+      compile for a 0.6 s evaluation). **Measured along the eigenvectors, not just the axes**: the
+      driver-amplitude/band-gain ridge (decision #13) makes curvatures differ ~3e4-fold, and a coordinate-axis
+      float32 Hessian made those posterior widths ~40 per cent too wide; along the eigenvectors every width
+      matches the exact Hessian to <2 per cent (CREAM case A and NGC 5548). Steps are 0.1 posterior sd.
+    - **Set-up**: `initialize_model(validate_grad=False)` (`_initialize_marginal_model`); its eager gradient
+      check compiled ~280 tiny one-off operations (~20 s). And `model._marginal_solve` /
+      `model._call_response` wrap the marginal solve and the response call in one `jax.jit` each, so
+      NumPyro's eager model pass compiles 56 operations instead of 174 (inlined inside the jitted potential;
+      the per-gradient cost is unchanged at ~42 ms). `_call_response` traces the wavelength (one compile for
+      all bands) and falls back to a direct call for a response that can't take a traced wavelength.
+    - **One restart by default for `method="laplace"`** (author's decision; `num_restarts=4` restores the
+      multi-start check). The nested solve keeps 4.
+    - The curvature check evaluates the potential point by point through a plain jitted potential, not a
+      separately compiled `vmap` of it (~4 s).
+    Still left: compiling the gradient (~4.5 s) and the eager set-up (~6 s) dominate; a persistent JAX
+    compilation cache would remove most of both for repeat fits on the same data. Laptop timings vary up to
+    ~2x between identical runs.
+    - **The nested solve (the default), 225 s -> ~90 s on the same set, same posterior** (10 October 2026).
+      Its exact Hessians (`jax.hessian` for the start, polish and modes; `jacfwd` of the gradient at grid
+      points) and its separately compiled inner gradient cost ~40 s of compilation: every Hessian is now
+      `fd_hessian` of the one compiled full gradient (`_Problem.hessian` along the eigenvectors of the grid
+      point's reference inner Hessian, redone if the spectrum moves by >4x). `fd_hessian`/`lbfgs_sd` live in
+      `nested_laplace.py`, shared with `optimise(method="laplace")`. What remains is ~2400 gradients, ~1270 of
+      them in the two rough search grids (scout and zoom, 108 points each, ~6 per point).
+    - **Measure before optimising the gradient:** of each ~43 ms gradient (2 bands), the marginal QR is only
+      ~5 ms; ~30 ms is the thin-disc response and its gradient (~15 ms per band, so ~200 ms for 13 bands). A
+      data-space QR (`model._marginal_solve`, when there are fewer points than linear parameters and the
+      linear parameters aren't needed) was added first on the wrong assumption that the QR dominated; it is
+      exact and tested (`test_data_space_marginal_matches_parameter_space_and_brute_force`) but saves ~2 ms.
+    - **`thin_disk_response(n_phi=100)`, was 200**: the response's Fourier transform at a fit's frequencies
+      is within 1e-7 of n_phi = 1600 at 30 degrees and 2e-3 at 80 (the near-side caustic converges slowly
+      at any n_phi), far below SNR-700 noise; posteriors and evidence unchanged to four figures (CREAM case
+      A, NGC 5548), 2.5x cheaper response. The unsmoothed 80-degree mean-lag drift is erratic in n_phi
+      (0.04-1.7%, the caustic aliasing against the lag grid; 200 passed the old 1% test by luck), so
+      `test_thin_disk_response_smoothing_days_zero_gives_exact_mean_lag_independence` now holds 0-40 degrees
+      to 0.1% and 0-80 to 2%. Gains: case A single Gaussian ~20 -> 14 s, NGC 5548 46 -> 36 s, nested 143 -> 91 s.
+
 ## Known rough edges / things to check before trusting results on real data
 
 - `synthetic.py`'s ground truth is generated with the *same* forward model
@@ -1183,19 +1264,14 @@ match; `pycream2.__version__` reads the installed metadata);
   DRW process. If you need exact DRW likelihoods, consider swapping in a
   Kalman-filter/celerite-style likelihood instead: that's a bigger change
   and would touch `model.py` more than `forward_model.py`.
-- `n_freq` / `n_tau` / `tau_max` in `EchoFit.build_grid()` are still simple
-  heuristics (log-spaced frequencies from a longest period of
-  `2 (baseline + tau_max)`, decision #27, to a Nyquist-style estimate;
-  `tau_max` defaults to half the time baseline). The frequency
-  upper bound (`w_max = pi / dt_min`) now comes from
-  `grid_utils.estimate_dt_min`, a robust (5th-percentile) estimate of
-  observation gaps, shared with `synthetic.py`'s ground-truth grid. This
-  replaced an earlier version that used the single *tightest* observed gap,
-  which for irregular sampling could blow up `w_max` and put the fit on a
-  completely different frequency basis than the data actually supports;
-  caught by `tests/test_recovery.py`. Still revisit if fitting real
-  campaigns with very different cadences per band; pass `dt_min` explicitly
-  to `build_grid()` if the data-driven estimate looks off.
+- The driver frequency grid is decision #29's (harmonics of
+  `2 (baseline + tau_max)`, then log spacing, to `f_max` = 2 cycles/day);
+  `n_tau` / `tau_max` are still simple heuristics (`tau_max` defaults to
+  half the time baseline). `grid_utils.estimate_dt_min` (a robust
+  5th-percentile estimate of observation gaps, not the single tightest gap,
+  which for irregular sampling blew up `w_max`; caught by
+  `tests/test_recovery.py`) now only sets the upper bound of the old grid
+  (`build_grid(n_freq=...)`) and of `synthetic.py`'s ground-truth grid.
 - The pipeline has now been run end-to-end (`pytest`, including an MCMC
   recovery test on synthetic data in `tests/test_recovery.py`), so it's no
   longer purely `py_compile`-checked. One finding from that: NUTS can spend

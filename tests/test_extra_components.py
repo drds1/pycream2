@@ -193,7 +193,11 @@ def test_optimise_recovers_injected_diffuse_continuum_and_backgrounds():
     for n, d in data["bands"].items():
         ef.add_lightcurve(n, d["wavelength"], d["t"], d["y"], d["yerr"],
                           diffuse_continuum=n in truth_dce, background_order=2 if n in truth_bg else 0)
-    ef.build_grid(tau_max=60, period_max=2 * np.pi / float(data["freqs"].min()))
+    # The truth's own (log-spaced) driver basis, not build_grid()'s default: the
+    # synthetic generator draws its driver on that basis, and this test is about
+    # the extra components, not the grid.
+    grid = dict(tau_max=60, period_max=2 * np.pi / float(data["freqs"].min()), n_freq=len(data["freqs"]))
+    ef.build_grid(**grid)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         ef.optimise(num_samples=300, num_restarts=2, method="laplace")
@@ -202,8 +206,8 @@ def test_optimise_recovers_injected_diffuse_continuum_and_backgrounds():
     with_components = ef.log_evidence
     plain = EchoFit(M_BH=1e8)
     for n, d in data["bands"].items():
-        plain.add_lightcurve(n, d["wavelength"], d["t"], d["y"], d["yerr"])
-    plain.build_grid(tau_max=60, period_max=2 * np.pi / float(data["freqs"].min()))
+        plain.add_lightcurve(n, d["wavelength"], d["t"], d["y"], d["yerr"], background_order=0)
+    plain.build_grid(**grid)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         plain.optimise(num_samples=50, num_restarts=1, method="laplace")

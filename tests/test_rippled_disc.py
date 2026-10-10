@@ -173,8 +173,10 @@ def test_rimmed_disc_recovery_and_flat_disc_bias(monkeypatch):
         monkeypatch.setattr(model_module, "response_function", response)
         ef = EchoFit(M_BH=M_BH)
         for name, d in data["bands"].items():
-            ef.add_lightcurve(name, d["wavelength"], d["t"], d["y"], d["yerr"])
-        ef.build_grid(tau_max=30.0, period_max=2 * np.pi / float(data["freqs"].min()))
+            ef.add_lightcurve(name, d["wavelength"], d["t"], d["y"], d["yerr"], background_order=0)
+        # The truth's own driver basis (the synthetic generator draws on it), not
+        # build_grid()'s default; the synthetic truth has no background.
+        ef.build_grid(tau_max=30.0, period_max=2 * np.pi / float(data["freqs"].min()), n_freq=len(data["freqs"]))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ef.optimise(num_samples=200, num_restarts=1, method="laplace")

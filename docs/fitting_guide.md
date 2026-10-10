@@ -73,12 +73,14 @@ flowchart TD
 | `lag_mode` | `add_lightcurve` | `"physical"` | emission lines, or any band whose lag shouldn't follow the disk law | 7 |
 | `fit_error_model` | `add_lightcurve`, `add_driver_lightcurve` | `False` | real data whose quoted errors you don't fully trust | 7 |
 | `diffuse_continuum` | `add_lightcurve` | `False` | delays look too long for a disc, or there is a lag excess near the Balmer jump (broad-line-region diffuse continuum) | 7 |
-| `background_order` | `add_lightcurve`, `add_driver_lightcurve` | `0` | slow trends unrelated to reverberation (try 1 or 2, keep it if `log_evidence` rises) | 7 |
-| `n_freq` | `build_grid` | 60 | fewer for speed on short campaigns; more for long, finely sampled ones | 5 |
+| `background_order` | `add_lightcurve`, `add_driver_lightcurve` | `1` | `0` only if you are sure there are no trends; `2` for curved ones | 7 |
+| `f_max` | `build_grid` | 2 cycles/day | black holes much lighter than ~1e7 Msun (raise it); speed on low-SNR data (lower it) | 5 |
+| `log_step` | `build_grid` | 0.03 | rarely | 5 |
+| `n_freq` | `build_grid` | unset (grid sized from `period_max`, `f_max`) | small, fast fits only: gives the old log grid with this many frequencies | 5 |
 | `n_tau` | `build_grid` | 400 | a resolution warning appears | 5 |
 | `tau_max` | `build_grid` | half the baseline | lags are known to be much shorter (sharper grid) | 5 |
 | `tau_grid_power` | `build_grid` | 3.0 | a resolution warning for short-wavelength bands | 5 |
-| `dt_min` | `build_grid` | 5th-percentile gap | very irregular cadence makes the estimate noisy | 5 |
+| `dt_min` | `build_grid` | unset | sets the upper frequency as `pi / dt_min` instead of `f_max` | 5 |
 | solver | method call | `.fit()` (NUTS) | `.optimise()` (nested Laplace) for speed; `.optimise(method="laplace")` for a quicker look when the data clearly constrain the disc (section 3) | 3 |
 | `method` | `optimise` | `"nested_laplace"` | `"laplace"`: the single-Gaussian solve, with its multi-start check | 3 |
 | `num_warmup`, `num_samples` | `fit` | 1000, 1000 | divergences (more warmup); smoother histograms (more samples) | 4 |
@@ -178,8 +180,11 @@ for a Gaussian posterior and good near one. It fails when:
   standard deviations. It reports the final figure as
   `ef.optimise_timings["newton_offset_in_sd"]` and warns above 0.25.
 
-**Checking reproducibility: multi-start.** Every restart (`num_restarts`,
-default 4) is polished to its own optimum and compared with the best, the
+**Checking reproducibility: multi-start.** `optimise(method="laplace")` runs
+one optimisation by default since October 2026 (each restart costs a full
+optimisation); pass `num_restarts=4` or more for this check. The nested
+solve keeps 4, which seed its mode search. Every restart is polished to its
+own optimum and compared with the best, the
 direct-solve counterpart of running several MCMC chains from different
 starting points. `ef.optimise_restarts` lists each restart's distance from
 the best (in posterior standard deviations) and how far above it sits in
@@ -291,32 +296,56 @@ during the run. Use it for anything long enough that losing it would hurt.
 
 ## 5. Grid settings (`build_grid`)
 
-### Frequency grid: `n_freq` (60), `period_max` and `dt_min`
+### Frequency grid: `period_max`, `f_max` (2 cycles/day) and `log_step` (0.03)
 
-The driver is a sum of $n_f$ sinusoids on a log-spaced grid from a longest
-period $P_\text{max}$ to the shortest period the cadence can resolve:
+The driver is a sum of sinusoids from a longest period $P_\text{max}$ up to
+$f_\text{max}$ cycles per day. Below a crossover frequency they are the
+harmonics of $P_\text{max}$, as in CREAM (Starkey et al. 2016); above it
+each frequency is a fixed fraction (`log_step`) above the last:
 
 ```math
-\omega_\text{min} = \frac{2\pi}{P_\text{max}}, \qquad P_\text{max} = 2\,(T + \tau_\text{max}), \qquad \omega_\text{max} = \frac{\pi}{\Delta t_\text{min}},
+\omega_1 = \Delta\omega = \frac{2\pi}{P_\text{max}}, \qquad \omega_{k+1} = \omega_k + \max(\Delta\omega,\ s\,\omega_k), \qquad \omega_k \le 2\pi f_\text{max},
 ```
 
-with $T$ the baseline. $T + \tau_\text{max}$ is the window the driver must
-cover (the echo at the first observation depends on the driver up to
+with $s$ = `log_step` and $P_\text{max} = 2\,(T + \tau_\text{max})$, $T$
+the baseline. $T + \tau_\text{max}$ is the window the driver must cover
+(the echo at the first observation depends on the driver up to
 $\tau_\text{max}$ earlier), and the factor of 2 lets the series represent
 trends longer than that window, which a red-noise driver always has. Until
 October 2026 the longest period was $T$ itself; on synthetic random-walk
 data that biased `log_mdot` and the inclination high, the fit absorbing the
 trends into long responses (`scripts/synthetic_recovery_grid.py`). The fit
 at the truth improved up to $P_\text{max} \approx 2(T + \tau_\text{max})$
-and was flat beyond it. Pass `period_max` to set it directly.
-$\omega_\text{max}$ is a Nyquist-style limit, with $\Delta t_\text{min}$
-taken as the 5th percentile of the observation gaps (robust to a few close
-pairs). Each
-frequency adds two parameters. More frequencies give a more flexible
-driver, but also more parameters for `.fit()` and a larger linear solve for
-`.optimise()`. 60 suits campaigns of a few hundred days. Use fewer (15 to
-30) for short or sparse campaigns, and pass `dt_min` explicitly if the
-cadence is very irregular.
+and was flat beyond it. Pass `period_max` to set it directly. Trends longer
+still are what the default linear background (section 7) is for.
+
+**Why harmonics, then log spacing.** Over a window of length $P_\text{max}$
+there is about one independent pair of Fourier coefficients per
+$1/P_\text{max}$ of bandwidth, so harmonics are the natural basis; a log
+grid packs near-duplicate modes in at low frequency. At high frequency the
+echoes are smoothed by the response and don't resolve individual harmonics:
+on the CREAM paper's synthetic tests a log grid there gave the same
+posteriors as harmonics all the way up, while harmonics to 2 cycles/day
+would need $2P_\text{max}$ modes (~1700 for an NGC 5548-length campaign, and
+a solve hundreds of times dearer). The default grid has ~120 to ~170 modes.
+
+**Why 2 cycles/day, whatever the cadence.** The echoes carry the driver's
+variability down to the sharpest feature of the response, its rise near
+zero lag, and high-SNR data resolve it. The earlier default stopped at a
+Nyquist-style limit from the cadence (a 1.6-day period for daily sampling):
+on the CREAM paper's high-SNR synthetic data the log posterior was up to
+~530 lower than with the finer grid, and on its SNR-100 data the fits
+drifted towards high inclination and accretion rate. Modes the data can't
+constrain only cost time: their prior integrates them out. Raise `f_max`
+for black holes much lighter than ~1e7 Msun, whose responses rise within
+hours; lower it to save time on low-SNR data. `dt_min` sets the upper limit
+as $\pi/\Delta t_\text{min}$ instead.
+
+`n_freq` asks for the grid used before October 2026: `n_freq` log-spaced
+frequencies from $2\pi/P_\text{max}$ to $\pi/\Delta t_\text{min}$, with
+$\Delta t_\text{min}$ the 5th-percentile observation gap unless given. It
+is kept for small, fast fits (tests, demos). Widening its range without
+adding frequencies thins the grid out and can be worse than the default.
 
 ### Lag grid: `n_tau` (400), `tau_max`, `tau_grid_power` (3.0)
 
@@ -417,7 +446,7 @@ single-Gaussian solve already fails from 7 bands onwards (measured before the
 nested solve existed). `scripts/fit_lightcurves.py
 --fit-error-model` turns it on for every band.
 
-### `diffuse_continuum` (default `False`) and `background_order` (default `0`)
+### `diffuse_continuum` (default `False`) and `background_order` (default `1`)
 
 Two optional components, described fully, with the mathematics, priors,
 literature and a synthetic recovery study, in
@@ -431,11 +460,20 @@ literature and a synthetic recovery study, in
 - **`background_order=K`** adds `K` Legendre polynomials in time to the
   light curve's constant offset, for slow variability unrelated to
   reverberation (cf. detrending, Welsh 1999). The coefficients are linear,
-  so `.optimise()` integrates them out exactly.
+  so `.optimise()` integrates them out exactly. **It is `1` (a linear
+  trend) by default since October 2026.** A red-noise driver has trends
+  longer than the driver's longest period; on the CREAM paper's synthetic
+  random-walk tests at SNR 100 they pulled `log_mdot` towards high values,
+  and the linear background removed most of that pull. On data without
+  such trends it changed nothing beyond slightly wider error bars. The
+  evidence did *not* reliably prefer it where it helped (the Occam penalty
+  of an extra parameter outweighed the fit), which is why it is a default
+  rather than something to switch on when `log_evidence` rises. Use `2` for
+  curved trends, `0` only when you are sure there are none.
 
-Both cost extra parameters and can trade off against the disc. Switch them
-on where there is a physical reason, and keep them only if the evidence
-(`ef.log_evidence` after `.optimise()`) prefers them.
+The diffuse continuum costs three parameters per band and can trade off
+against the disc. Switch it on where there is a physical reason, and keep it
+only if the evidence (`ef.log_evidence` after `.optimise()`) prefers it.
 
 ### `add_driver_lightcurve`
 

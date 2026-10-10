@@ -24,10 +24,11 @@ def _small_echofit(with_driver=True, fit_error_model=False, fixed_params=None, *
         t = np.sort(rng.uniform(0.0, 60.0, 15))
         ef.add_lightcurve(
             name, wavelength=wav, t=t, y=rng.normal(1.0, 0.5, 15), yerr=np.full(15, 0.1),
-            fit_error_model=fit_error_model,
+            fit_error_model=fit_error_model, background_order=0,  # backgrounds: test_extra_components.py
         )
     if with_driver:
-        ef.add_driver_lightcurve(t=np.sort(rng.uniform(0.0, 60.0, 12)), y=rng.normal(size=12), yerr=np.full(12, 0.2))
+        ef.add_driver_lightcurve(t=np.sort(rng.uniform(0.0, 60.0, 12)), y=rng.normal(size=12), yerr=np.full(12, 0.2),
+                                 background_order=0)
     ef.build_grid(n_freq=10, n_tau=80)
     return ef
 
@@ -89,6 +90,41 @@ def test_marginal_likelihood_matches_brute_force_integration(with_driver, fit_er
     kwargs.pop("marginalise_linear", None)
     expected = _brute_force_marginal(kwargs, fixed_params or {})
     assert _marginal_factor(kwargs) == pytest.approx(expected, rel=1e-4)
+
+
+@pytest.mark.parametrize("fit_error_model", [False, True])
+def test_data_space_marginal_matches_parameter_space_and_brute_force(fit_error_model, monkeypatch):
+    """Fewer data points (42) than linear parameters (~63): the marginal
+    likelihood is factorised in data space; it must agree with the
+    parameter-space factorisation and the dense float64 integral, in value
+    and gradient."""
+    ef = _small_echofit(True, fit_error_model)
+    ef.build_grid(n_freq=30, n_tau=80)
+    kwargs = ef._model_kwargs()
+    kwargs.pop("marginalise_linear", None)
+    n_obs = sum(len(d["t"]) for d in ef.bands.values()) + len(ef.driver_data["t"])
+    assert n_obs < 2 * len(ef.freqs)
+    expected = _brute_force_marginal(kwargs, {})
+    data_space = _marginal_factor(kwargs)
+    monkeypatch.setattr(model_module, "_FORCE_PARAMETER_SPACE", True)
+    jax.clear_caches()
+    parameter_space = _marginal_factor(kwargs)
+    assert data_space == pytest.approx(expected, rel=1e-4)
+    assert data_space == pytest.approx(parameter_space, rel=1e-5)
+
+    def gradient(force):
+        monkeypatch.setattr(model_module, "_FORCE_PARAMETER_SPACE", force)
+        jax.clear_caches()
+
+        def loglik(log_mdot, sigma_drw):
+            values = dict(_NONLINEAR, log_mdot=log_mdot, sigma_drw=sigma_drw)
+            tr = handlers.trace(handlers.substitute(handlers.seed(reverberation_model, 0), values)).get_trace(
+                **kwargs, marginalise_linear=True)
+            return tr["linear_marginal_loglik"]["fn"].log_prob(tr["linear_marginal_loglik"]["value"])
+
+        return np.asarray(jax.grad(loglik, argnums=(0, 1))(jnp.asarray(0.2), jnp.asarray(0.7)))
+
+    np.testing.assert_allclose(gradient(False), gradient(True), rtol=1e-3)
 
 
 def test_marginalised_model_has_no_linear_sample_sites():
@@ -270,7 +306,7 @@ def test_optimise_laplace_matches_nuts():
             ef.add_lightcurve(name, wavelength=d["wavelength"], t=d["t"], y=d["y"], yerr=d["yerr"])
         ef.build_grid(n_freq=30, n_tau=200)
         if direct:
-            ef.optimise(restart_scale=1.0, method="laplace")
+            ef.optimise(num_restarts=4, restart_scale=1.0, method="laplace")
             # Real light curves: every restart, from widely spread starts,
             # must reach the same optimum.
             assert ef.optimise_timings["restarts_agreeing"] == 4

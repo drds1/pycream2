@@ -11,7 +11,10 @@ curve:
   broad-line region (BLR).
 - **A slowly varying background** (`background_order=K`): Legendre
   polynomials in time added to a light curve's constant offset. It is meant
-  for slow variability that is not reverberation.
+  for slow variability that is not reverberation. Since October 2026 every
+  light curve has a linear one (`background_order=1`) by default, for trends
+  longer than the driver's longest period (`fitting_guide.md`, section 7);
+  pass `background_order=0` to remove it.
 
 This page explains why they are there (section 1), gives the mathematics
 (section 2), shows how to use them (section 3), and tests on synthetic data
@@ -305,9 +308,9 @@ from pycream2 import EchoFit
 
 ef = EchoFit(M_BH=1e8)
 ef.add_lightcurve("u", 3543.0, t_u, y_u, yerr_u, background_order=2)
-ef.add_lightcurve("g", 4770.0, t_g, y_g, yerr_g)
-ef.add_lightcurve("r", 6231.0, t_r, y_r, yerr_r, diffuse_continuum=True)
-ef.add_lightcurve("i", 7625.0, t_i, y_i, yerr_i, diffuse_continuum=True, background_order=1)
+ef.add_lightcurve("g", 4770.0, t_g, y_g, yerr_g)                    # background_order=1, the default
+ef.add_lightcurve("r", 6231.0, t_r, y_r, yerr_r, diffuse_continuum=True, background_order=0)
+ef.add_lightcurve("i", 7625.0, t_i, y_i, yerr_i, diffuse_continuum=True)
 ef.build_grid()
 ef.optimise()          # or ef.fit() for NUTS
 

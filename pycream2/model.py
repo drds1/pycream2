@@ -199,6 +199,7 @@ minimum at second order.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Dict, Optional
 
 import jax
@@ -475,14 +476,8 @@ def reverberation_model(
             C_band = _param(f"C_{band_name}", dist.Normal(offset_loc, offset_sd))
 
         if d["lag_mode"] == "physical":
-            psi = response_function(
-                tau_grid,
-                log_mdot=log_mdot,
-                wavelength=d["wavelength"],
-                inclination=inclination,
-                M_BH=M_BH,
-                **slope_kwargs,
-            )
+            psi = _call_response(response_function, tau_grid, log_mdot, d["wavelength"], inclination, M_BH,
+                                 **slope_kwargs)
         else:
             tau_band = _param(f"tau_{band_name}", dist.Uniform(0.0, tau_max))
             psi = tophat_response_free(tau_grid, tau_mean=tau_band)
@@ -575,6 +570,107 @@ def _basis(freqs, t):
     return jnp.sin(wt), jnp.cos(wt)
 
 
+_BLOCK_ARRAYS = ("y", "sigma", "gain", "S_cols", "C_cols", "known_offset", "offset_loc", "offset_sd",
+                 "bg_cols", "bg_sd")
+
+
+@partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
+def _marginal_solve(arrays, prior_scale, n_off, n_bg, layout, bg_layout, need_theta=True):
+    """The numerics of :func:`_linear_marginal`: each block's design-matrix
+    rows, the conditional mean and QR factor of the linear parameters, and the
+    marginal log likelihood. Compiled as one function: inside a jitted
+    potential it is simply inlined, but NumPyro's set-up runs the model
+    eagerly, where its ~45 operations were each compiled on their own (~2 s).
+    ``layout[i]`` is block ``i``'s offset column (``None`` for a known
+    offset); ``bg_layout[i]`` its background columns' ``(start, count)``.
+    Without ``need_theta`` (the potential and its gradient, not the draws),
+    ``theta_hat`` and ``R`` are ``None``, and with fewer data points than
+    linear parameters the factorisation is done in data space, which is
+    cheaper there (see below)."""
+    rows, ys, sigmas = [], [], []
+    for b, off, bg in zip(arrays, layout, bg_layout):
+        n = b["y"].shape[0]
+        onehot = jnp.zeros((n_off,))
+        if off is not None:
+            onehot = onehot.at[off].set(b["offset_sd"])
+            ys.append(b["y"] - b["offset_loc"])
+        else:
+            ys.append(b["y"] - b["known_offset"])
+        bg_part = jnp.zeros((n, n_bg))
+        if bg is not None:
+            bg_part = bg_part.at[:, bg[0]:bg[0] + bg[1]].set(b["bg_cols"] * b["bg_sd"])
+        rows.append(jnp.concatenate([
+            b["gain"] * b["S_cols"] * prior_scale,
+            b["gain"] * b["C_cols"] * prior_scale,
+            jnp.ones((n, 1)) * onehot[None, :],
+            bg_part,
+        ], axis=1))
+        sigmas.append(jnp.broadcast_to(b["sigma"], (n,)))
+    y = jnp.concatenate(ys)
+    sigma = jnp.concatenate(sigmas)
+    Mw = jnp.concatenate(rows, axis=0) / sigma[:, None]   # D^-1/2 M, (N, p)
+    yw = y / sigma                                        # D^-1/2 y
+    n_data, p = Mw.shape
+
+    if not need_theta and n_data < p:
+        # Data space: QR of [Mw^T; I_N], (p + N) x N instead of (N + p) x p,
+        # ~(p/N)^2 fewer operations (CREAM case A: 186 points, ~260 linear
+        # parameters, ~2x per gradient). R^T R = I_N + Mw Mw^T, the whitened
+        # data covariance, with R's condition number again the square root of
+        # it; det(I_N + Mw Mw^T) = det(I_p + Mw^T Mw) (Sylvester), so the log
+        # det is the same, and the quadratic form y^T K^-1 y = |R^-T y|^2 is a
+        # sum of squares, free of the cancellation that rules out the textbook
+        # y^T y - b^T P^-1 b in float32.
+        _, R = jnp.linalg.qr(jnp.concatenate([Mw.T, jnp.eye(n_data)], axis=0))
+        u = jax.scipy.linalg.solve_triangular(R, yw, trans="T", lower=False)
+        log_det = 2.0 * jnp.sum(jnp.log(jnp.abs(jnp.diag(R)))) + 2.0 * jnp.sum(jnp.log(sigma))
+        loglik = -0.5 * (u @ u + log_det + n_data * jnp.log(2.0 * jnp.pi))
+        return rows, None, None, loglik
+
+    # QR of the stacked least-squares system [D^-1/2 M; I], not a Cholesky
+    # of P = I + M^T D^-1 M: R^T R = P, but R's condition number is only the
+    # square root of P's. P reached ~3e7 on a 5-band, 500-point test set, and
+    # a float32 Cholesky there gave gradients ~9% off, enough to shrink
+    # NUTS's adapted step size from ~0.4 to a tiny fraction of that and
+    # multiply trajectory lengths ~30x. See CLAUDE.md decision #21.
+    Q, R = jnp.linalg.qr(jnp.concatenate([Mw, jnp.eye(p)], axis=0))
+    theta_hat = jax.scipy.linalg.solve_triangular(R, Q[: Mw.shape[0]].T @ yw, lower=False)
+    resid = yw - Mw @ theta_hat
+    quad = resid @ resid + theta_hat @ theta_hat
+    log_det = 2.0 * jnp.sum(jnp.log(jnp.abs(jnp.diag(R)))) + 2.0 * jnp.sum(jnp.log(sigma))
+    loglik = -0.5 * (quad + log_det + y.shape[0] * jnp.log(2.0 * jnp.pi))
+    return rows, theta_hat, R, loglik
+
+
+# Testing hook: True makes _linear_marginal always factorise in parameter space.
+_FORCE_PARAMETER_SPACE = False
+
+_RESPONSE_JIT: dict = {}
+
+
+def _call_response(fn, tau_grid, log_mdot, wavelength, inclination, M_BH, **kwargs):
+    """``fn(tau_grid, log_mdot=..., wavelength=..., inclination=..., M_BH=...)``
+    through one ``jax.jit`` per response function, ``M_BH`` and keyword set.
+    Inside a jitted potential this is inlined; in NumPyro's eager set-up pass
+    the thin-disc response's ~80 operations were otherwise each compiled on
+    their own (~4 s). ``wavelength`` is traced, so every band shares one
+    compilation. A response that can't take a traced wavelength (one that
+    does numpy work on its arguments) is called directly from then on."""
+    key = (fn, M_BH, tuple(sorted(kwargs)))
+    jitted = _RESPONSE_JIT.get(key)
+    if jitted is None:
+        jitted = jax.jit(lambda tau, lm, wl, inc, **kw: fn(tau, log_mdot=lm, wavelength=wl, inclination=inc,
+                                                            M_BH=M_BH, **kw))
+        _RESPONSE_JIT[key] = jitted
+    if jitted is not False:
+        try:
+            return jitted(tau_grid, log_mdot, jnp.asarray(wavelength, dtype=jnp.float32), inclination, **kwargs)
+        except (jax.errors.ConcretizationTypeError, jax.errors.TracerArrayConversionError,
+                jax.errors.TracerBoolConversionError, TypeError):
+            _RESPONSE_JIT[key] = False
+    return fn(tau_grid, log_mdot=log_mdot, wavelength=wavelength, inclination=inclination, M_BH=M_BH, **kwargs)
+
+
 def _linear_marginal(blocks, prior_scale, draw_linear):
     """Add the exact marginal likelihood of every light curve in ``blocks``
     (linear parameters integrated out) as a ``numpyro.factor`` and, if
@@ -598,47 +694,17 @@ def _linear_marginal(blocks, prior_scale, draw_linear):
         bg_start[b["name"]] = n_bg
         n_bg += b["bg_cols"].shape[1]
 
-    rows, ys, sigmas = [], [], []
-    for b in blocks:
-        n = b["y"].shape[0]
-        onehot = jnp.zeros((n_off,))
-        if b["known_offset"] is None:
-            onehot = onehot.at[offset_names.index(b["name"])].set(b["offset_sd"])
-            ys.append(b["y"] - b["offset_loc"])
-        else:
-            ys.append(b["y"] - b["known_offset"])
-        bg_part = jnp.zeros((n, n_bg))
-        if b.get("bg_cols") is not None:
-            k0 = bg_start[b["name"]]
-            bg_part = bg_part.at[:, k0:k0 + b["bg_cols"].shape[1]].set(b["bg_cols"] * b["bg_sd"])
-        rows.append(jnp.concatenate([
-            b["gain"] * b["S_cols"] * prior_scale,
-            b["gain"] * b["C_cols"] * prior_scale,
-            jnp.ones((n, 1)) * onehot[None, :],
-            bg_part,
-        ], axis=1))
-        sigmas.append(jnp.broadcast_to(b["sigma"], (n,)))
-    y = jnp.concatenate(ys)
-    sigma = jnp.concatenate(sigmas)
-    Mw = jnp.concatenate(rows, axis=0) / sigma[:, None]   # D^-1/2 M, (N, p)
-    yw = y / sigma                                        # D^-1/2 y
-    p = Mw.shape[1]
-
-    # QR of the stacked least-squares system [D^-1/2 M; I], not a Cholesky
-    # of P = I + M^T D^-1 M: R^T R = P, but R's condition number is only the
-    # square root of P's. P reached ~3e7 on a 5-band, 500-point test set, and
-    # a float32 Cholesky there gave gradients ~9% off, enough to shrink
-    # NUTS's adapted step size from ~0.4 to a tiny fraction of that and
-    # multiply trajectory lengths ~30x. See CLAUDE.md decision #21.
-    Q, R = jnp.linalg.qr(jnp.concatenate([Mw, jnp.eye(p)], axis=0))
-    theta_hat = jax.scipy.linalg.solve_triangular(R, Q[: Mw.shape[0]].T @ yw, lower=False)
-    resid = yw - Mw @ theta_hat
-    quad = resid @ resid + theta_hat @ theta_hat
-    log_det = 2.0 * jnp.sum(jnp.log(jnp.abs(jnp.diag(R)))) + 2.0 * jnp.sum(jnp.log(sigma))
-    numpyro.factor("linear_marginal_loglik", -0.5 * (quad + log_det + y.shape[0] * jnp.log(2.0 * jnp.pi)))
+    arrays = [{k: b.get(k) for k in _BLOCK_ARRAYS} for b in blocks]
+    layout = tuple(offset_names.index(b["name"]) if b["known_offset"] is None else None for b in blocks)
+    bg_layout = tuple((bg_start[b["name"]], b["bg_cols"].shape[1]) if b.get("bg_cols") is not None else None
+                      for b in blocks)
+    rows, theta_hat, R, loglik = _marginal_solve(arrays, prior_scale, n_off, n_bg, layout, bg_layout,
+                                                 draw_linear or _FORCE_PARAMETER_SPACE)
+    numpyro.factor("linear_marginal_loglik", loglik)
 
     if not draw_linear:
         return
+    p = R.shape[0]
     # Conditional posterior is N(theta_hat, P^-1); with P = R^T R,
     # theta_hat + R^-1 eps (eps ~ N(0, I)) has exactly that covariance.
     eps = numpyro.sample("linear_eps", dist.Normal(0.0, 1.0).expand([p]).to_event(1))

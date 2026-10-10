@@ -79,6 +79,60 @@ DEFAULT_GRID_PARAMS = ("log_mdot", "cos_inclination", "temperature_slope")
 MODE_DROP = 12.0
 
 
+def lbfgs_sd(result) -> np.ndarray:
+    """Per-parameter posterior scale from L-BFGS-B's inverse-Hessian estimate,
+    or ones if it has none."""
+    try:
+        return np.sqrt(np.clip(np.diag(result.hess_inv.todense()), 1e-12, None))
+    except AttributeError:
+        return np.ones(np.size(result.x))
+
+
+def fd_hessian(grad, z, sd=None, basis=None, frac: float = 0.1):
+    """Hessian by central differences of a (compiled) gradient, with nothing
+    new to compile (``jax.hessian`` of the marginal potential took ~25 s to
+    compile for a 0.6 s evaluation). Returns ``(H, vals, vecs)``, ``H``
+    symmetric and ``vals, vecs`` its eigen-decomposition.
+
+    Measured along the eigenvectors of ``basis`` (a previous ``(vals, vecs)``),
+    each with a step of ``frac`` of that direction's own posterior standard
+    deviation: ``2 d`` gradient calls. Without a basis, a first pass along the
+    coordinate axes (steps ``frac * sd``) supplies one, and the eigenbasis pass
+    follows (``4 d`` calls). The second pass matters: the driver-amplitude/
+    band-gain ridge (CLAUDE.md decision #13) makes curvatures differ by ~1e4-1e5
+    between directions, and float32 errors of a coordinate-axis Hessian swamp
+    the ridge's small eigenvalue (posterior widths up to 40 per cent off on
+    CREAM case A; along the eigenvectors they match the exact Hessian). A step
+    on the posterior's own scale also smooths over the thin-disc potential's
+    tiny ripples, as optimise()'s curvature check does."""
+    z = np.asarray(z, dtype=np.float64)
+    d = z.size
+
+    def along(directions, steps):
+        cols = [(np.asarray(grad(z + s * v), dtype=np.float64) - np.asarray(grad(z - s * v), dtype=np.float64))
+                / (2 * s) for v, s in zip(directions.T, steps)]
+        return np.stack(cols, axis=1)  # column k: H @ direction_k
+
+    if basis is None:
+        steps = np.clip(frac * np.asarray(sd if sd is not None else np.ones(d), dtype=np.float64), 1e-5, 1.0)
+        h = along(np.eye(d), steps)
+        basis = np.linalg.eigh(0.5 * (h + h.T))
+    vals, vecs = basis
+    steps = np.clip(frac / np.sqrt(np.clip(np.abs(vals), 1e-12, None)), 1e-5, 1.0)
+    b = vecs.T @ along(vecs, steps)  # the Hessian in the eigenbasis
+    h = vecs @ (0.5 * (b + b.T)) @ vecs.T
+    h = 0.5 * (h + h.T)
+    vals, vecs = np.linalg.eigh(h)
+    return h, vals, vecs
+
+
+def _eigen_mismatch(a, b) -> float:
+    """Largest ratio between the sorted absolute eigenvalues of two spectra."""
+    a, b = np.sort(np.abs(a)), np.sort(np.abs(b))
+    a, b = np.clip(a, 1e-12, None), np.clip(b, 1e-12, None)
+    return float(np.max(np.maximum(a / b, b / a)))
+
+
 def _transforms(model, kwargs, names):
     """NumPyro's constrained<->unconstrained transform for each named site."""
     from numpyro import handlers
@@ -126,25 +180,33 @@ class _Problem:
         self.inner = np.array([i for i in range(self.z0.size) if i not in set(self.outer)])
         self.transforms = _transforms(model, kwargs, self.names)
         potential = lambda z: info.potential_fn(self.unravel(z))
-        self.potential = jax.jit(potential)
         self.batch_potential = jax.jit(jax.vmap(potential))
+        # One compiled gradient serves everything: the joint optimisations, the
+        # inner solves (its inner components) and every Hessian (finite
+        # differences of it, fd_hessian / hessian below). Separately compiled
+        # inner gradients and exact Hessians cost ~40 s of compilation on a
+        # 5-parameter problem.
+        self.vg_full = jax.jit(jax.value_and_grad(potential))
 
         def assemble(zr, zo):
             return jnp.zeros_like(self.z0).at[self.inner].set(zr).at[self.outer].set(zo)
 
         self.assemble = assemble
-        inner_pot = lambda zr, zo: potential(assemble(zr, zo))
-        self.inner_vg = jax.jit(jax.value_and_grad(inner_pot))
-        self.full_hessian = jax.jit(jax.hessian(potential))
-        # The inner rows of the Hessian only (forward derivatives along the
-        # inner directions of the gradient): gives H_rr and H_ro, which is all
-        # a grid point needs, for d_inner rather than d_total directions.
-        grad = jax.grad(potential)
-        self.inner_hessian = jax.jit(
-            lambda zr, zo: jax.jacfwd(lambda r: grad(assemble(r, zo)))(zr)
-        )
         self.n_grad = 0
         self.n_hess = 0
+
+    def _z(self, zr, zo):
+        z = np.empty(self.z0.size)
+        z[self.inner], z[self.outer] = zr, zo
+        return z
+
+    def full_vg(self, z):
+        self.n_grad += 1
+        f, g = self.vg_full(jnp.asarray(z, dtype=self.dtype))
+        return float(f), np.asarray(g, dtype=np.float64)
+
+    def full_grad(self, z):
+        return self.full_vg(z)[1]
 
     # constrained outer values theta <-> unconstrained zo, and log |d theta / d zo|
     def to_unconstrained(self, theta):
@@ -155,17 +217,33 @@ class _Problem:
                    for n, z, t in zip(self.names, zo, theta))
 
     def vg(self, zr, zo):
-        self.n_grad += 1
-        f, g = self.inner_vg(jnp.asarray(zr, dtype=self.dtype), jnp.asarray(zo, dtype=self.dtype))
-        return float(f), np.asarray(g, dtype=np.float64)
+        f, g = self.full_vg(self._z(zr, zo))
+        return f, g[self.inner]
 
-    def hessian(self, zr, zo):
-        """Full Hessian at (zr, zo); returns the inner block H_rr and the cross block H_ro."""
+    def hessian(self, zr, zo, h_ref):
+        """Inner block H_rr and cross block H_ro of the Hessian at (zr, zo), by
+        central differences of the full gradient along the eigenvectors of a
+        nearby inner Hessian ``h_ref`` (``2 d_inner`` gradients), redone along
+        the new eigenvectors if the spectrum moved by more than a factor of 4."""
         self.n_hess += 1
-        cols = np.asarray(self.inner_hessian(jnp.asarray(zr, dtype=self.dtype), jnp.asarray(zo, dtype=self.dtype)),
-                          dtype=np.float64)  # (d_total, d_inner): d grad / d zr
-        h_rr = cols[self.inner]
-        return 0.5 * (h_rr + h_rr.T), cols[self.outer].T
+        z = self._z(zr, zo)
+        vals, vecs = np.linalg.eigh(0.5 * (h_ref + h_ref.T))
+        for attempt in range(2):
+            steps = np.clip(0.1 / np.sqrt(np.clip(np.abs(vals), 1e-12, None)), 1e-5, 1.0)
+            cols = []
+            for v, s in zip(vecs.T, steps):
+                e = np.zeros(z.size)
+                e[self.inner] = s * v
+                cols.append((self.full_grad(z + e) - self.full_grad(z - e)) / (2 * s))
+            a = np.stack(cols, axis=1)  # H[:, inner] @ vecs
+            h_rr = a[self.inner] @ vecs.T
+            h_rr = 0.5 * (h_rr + h_rr.T)
+            h_or = a[self.outer] @ vecs.T
+            new_vals, new_vecs = np.linalg.eigh(h_rr)
+            if attempt or _eigen_mismatch(new_vals, vals) < 4.0:
+                break
+            vals, vecs = new_vals, new_vecs
+        return h_rr, h_or.T
 
 
 def _inner_solve(prob: _Problem, zr, zo, h_rr, tol=1e-2, max_iter=30):
@@ -212,33 +290,35 @@ def _solve_point(prob, theta, zr_start, h_rr, exact_hessian, rough=False):
     zr, f, ok = _inner_solve(prob, np.asarray(zr_start, dtype=np.float64), zo, h_rr, tol=tol, max_iter=max_iter)
     if not ok and np.isfinite(f) and not rough:
         # A stale Hessian can stall; retry once with the exact one here.
-        h_rr = prob.hessian(zr, zo)[0]
+        h_rr = prob.hessian(zr, zo, h_rr)[0]
         zr, f, ok = _inner_solve(prob, zr, zo, h_rr)
     if not np.isfinite(f):
         return None
     out = dict(theta=np.asarray(theta, dtype=np.float64), zo=zo, zr=zr, U=f, converged=ok,
                log_jac=prob.log_jacobian(zo, theta), h_used=h_rr)
     if exact_hessian:
-        h_rr, h_ro = prob.hessian(zr, zo)
+        h_rr, h_ro = prob.hessian(zr, zo, h_rr)
         h_reg, indefinite = _saddle_free(h_rr)
         out.update(h_rr=h_reg, h_ro=h_ro, logdet=float(np.linalg.slogdet(h_reg)[1]), indefinite=indefinite)
     return out
 
 
-def _polish(prob, objective, z, max_iter=20, tol=0.01):
+def _polish(prob, objective, z, sd=None, max_iter=20, tol=0.01):
     """Damped, saddle-free Newton steps on the full potential from ``z``, each
     accepted only if the potential falls, until the step is below ``tol``
     posterior sds: the same polish as optimise(method="laplace") (CLAUDE.md
     decision #21). L-BFGS alone can stop well short of the peak along
     prior-dominated directions; without this, the demo's diffuse-continuum
-    fit found a "mode" ~3400 in log evidence below the real one."""
+    fit found a "mode" ~3400 in log evidence below the real one. Hessians by
+    finite differences (fd_hessian), each along the previous one's
+    eigenvectors; returns ``(z, f, h)`` with ``h`` the Hessian at ``z``."""
     z = np.asarray(z, dtype=np.float64)
     f, g = objective(z)
-    damping = 0.0
+    damping, basis = 0.0, None
     for _ in range(max_iter):
-        h = np.asarray(prob.full_hessian(jnp.asarray(z, dtype=prob.dtype)), dtype=np.float64)
-        vals, vecs = np.linalg.eigh(0.5 * (h + h.T))
-        vals = np.clip(np.abs(vals), 1e-8 * max(np.abs(vals).max(), 1e-12), None)
+        h, raw_vals, vecs = fd_hessian(prob.full_grad, z, sd=sd, basis=basis)
+        basis = (raw_vals, vecs)
+        vals = np.clip(np.abs(raw_vals), 1e-8 * max(np.abs(raw_vals).max(), 1e-12), None)
         ge = vecs.T @ g
         if np.max(np.abs(vecs @ (ge / vals)) / np.sqrt(np.diag((vecs / vals) @ vecs.T))) < tol:
             break
@@ -252,7 +332,9 @@ def _polish(prob, objective, z, max_iter=20, tol=0.01):
             break
         z, f, g = z - step, f_new, g_new
         damping /= 10.0
-    return z, f
+    else:
+        h = fd_hessian(prob.full_grad, z, basis=basis)[0]
+    return z, f, h
 
 
 def _saddle_free(h):
@@ -383,19 +465,14 @@ def run(model, kwargs, info, num_samples: int = 1000, rng_seed: int = 0,
 
     # 1. A starting point: the joint optimum from the data-anchored start.
     t0 = time.perf_counter()
-    vg_full = jax.jit(jax.value_and_grad(lambda z: info.potential_fn(prob.unravel(z))))
-
     def objective(z):
-        v, g = vg_full(jnp.asarray(z, dtype=prob.dtype))
-        v, g = float(v), np.asarray(g, dtype=np.float64)
+        v, g = prob.full_vg(z)
         return (v, g) if np.isfinite(v) and np.all(np.isfinite(g)) else (1e10, np.zeros_like(g))
 
     res = minimize(objective, np.asarray(prob.z0, dtype=np.float64), jac=True, method="L-BFGS-B",
                    options=dict(ftol=1e-7, gtol=1e-3, maxiter=1000))
-    z_hat, _ = _polish(prob, objective, res.x)
+    z_hat, _, h_full = _polish(prob, objective, res.x, sd=lbfgs_sd(res))
     theta_hat = np.array([float(prob.transforms[n](jnp.asarray(z_hat[i]))) for n, i in zip(prob.names, prob.outer)])
-    h_full = np.asarray(prob.full_hessian(jnp.asarray(z_hat, dtype=prob.dtype)), dtype=np.float64)
-    h_full = 0.5 * (h_full + h_full.T)
     h_rr0 = _saddle_free(h_full[np.ix_(prob.inner, prob.inner)])[0]
     logdet0 = np.linalg.slogdet(h_rr0)[1]
     start = dict(theta=theta_hat, zr=z_hat[prob.inner], h_rr=h_rr0)
@@ -446,9 +523,7 @@ def run(model, kwargs, info, num_samples: int = 1000, rng_seed: int = 0,
         m = minimize(objective, zs, jac=True, method="L-BFGS-B", options=dict(ftol=1e-7, gtol=1e-3, maxiter=1000))
         if not np.isfinite(m.fun) or m.fun >= 1e9:
             continue
-        m.x, m.fun = _polish(prob, objective, m.x)
-        h = np.asarray(prob.full_hessian(jnp.asarray(m.x, dtype=prob.dtype)), dtype=np.float64)
-        h = 0.5 * (h + h.T)
+        m.x, m.fun, h = _polish(prob, objective, m.x, sd=lbfgs_sd(m))
         vals, vecs = np.linalg.eigh(h)
         if vals.min() <= 0:
             vals = np.clip(np.abs(vals), 1e-8, None)

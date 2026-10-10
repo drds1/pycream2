@@ -574,15 +574,19 @@ _BLOCK_ARRAYS = ("y", "sigma", "gain", "S_cols", "C_cols", "known_offset", "offs
                  "bg_cols", "bg_sd")
 
 
-@partial(jax.jit, static_argnums=(2, 3, 4, 5))
-def _marginal_solve(arrays, prior_scale, n_off, n_bg, layout, bg_layout):
+@partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
+def _marginal_solve(arrays, prior_scale, n_off, n_bg, layout, bg_layout, need_theta=True):
     """The numerics of :func:`_linear_marginal`: each block's design-matrix
     rows, the conditional mean and QR factor of the linear parameters, and the
     marginal log likelihood. Compiled as one function: inside a jitted
     potential it is simply inlined, but NumPyro's set-up runs the model
     eagerly, where its ~45 operations were each compiled on their own (~2 s).
     ``layout[i]`` is block ``i``'s offset column (``None`` for a known
-    offset); ``bg_layout[i]`` its background columns' ``(start, count)``."""
+    offset); ``bg_layout[i]`` its background columns' ``(start, count)``.
+    Without ``need_theta`` (the potential and its gradient, not the draws),
+    ``theta_hat`` and ``R`` are ``None``, and with fewer data points than
+    linear parameters the factorisation is done in data space, which is
+    cheaper there (see below)."""
     rows, ys, sigmas = [], [], []
     for b, off, bg in zip(arrays, layout, bg_layout):
         n = b["y"].shape[0]
@@ -606,7 +610,22 @@ def _marginal_solve(arrays, prior_scale, n_off, n_bg, layout, bg_layout):
     sigma = jnp.concatenate(sigmas)
     Mw = jnp.concatenate(rows, axis=0) / sigma[:, None]   # D^-1/2 M, (N, p)
     yw = y / sigma                                        # D^-1/2 y
-    p = Mw.shape[1]
+    n_data, p = Mw.shape
+
+    if not need_theta and n_data < p:
+        # Data space: QR of [Mw^T; I_N], (p + N) x N instead of (N + p) x p,
+        # ~(p/N)^2 fewer operations (CREAM case A: 186 points, ~260 linear
+        # parameters, ~2x per gradient). R^T R = I_N + Mw Mw^T, the whitened
+        # data covariance, with R's condition number again the square root of
+        # it; det(I_N + Mw Mw^T) = det(I_p + Mw^T Mw) (Sylvester), so the log
+        # det is the same, and the quadratic form y^T K^-1 y = |R^-T y|^2 is a
+        # sum of squares, free of the cancellation that rules out the textbook
+        # y^T y - b^T P^-1 b in float32.
+        _, R = jnp.linalg.qr(jnp.concatenate([Mw.T, jnp.eye(n_data)], axis=0))
+        u = jax.scipy.linalg.solve_triangular(R, yw, trans="T", lower=False)
+        log_det = 2.0 * jnp.sum(jnp.log(jnp.abs(jnp.diag(R)))) + 2.0 * jnp.sum(jnp.log(sigma))
+        loglik = -0.5 * (u @ u + log_det + n_data * jnp.log(2.0 * jnp.pi))
+        return rows, None, None, loglik
 
     # QR of the stacked least-squares system [D^-1/2 M; I], not a Cholesky
     # of P = I + M^T D^-1 M: R^T R = P, but R's condition number is only the
@@ -622,6 +641,9 @@ def _marginal_solve(arrays, prior_scale, n_off, n_bg, layout, bg_layout):
     loglik = -0.5 * (quad + log_det + y.shape[0] * jnp.log(2.0 * jnp.pi))
     return rows, theta_hat, R, loglik
 
+
+# Testing hook: True makes _linear_marginal always factorise in parameter space.
+_FORCE_PARAMETER_SPACE = False
 
 _RESPONSE_JIT: dict = {}
 
@@ -676,12 +698,13 @@ def _linear_marginal(blocks, prior_scale, draw_linear):
     layout = tuple(offset_names.index(b["name"]) if b["known_offset"] is None else None for b in blocks)
     bg_layout = tuple((bg_start[b["name"]], b["bg_cols"].shape[1]) if b.get("bg_cols") is not None else None
                       for b in blocks)
-    rows, theta_hat, R, loglik = _marginal_solve(arrays, prior_scale, n_off, n_bg, layout, bg_layout)
+    rows, theta_hat, R, loglik = _marginal_solve(arrays, prior_scale, n_off, n_bg, layout, bg_layout,
+                                                 draw_linear or _FORCE_PARAMETER_SPACE)
     numpyro.factor("linear_marginal_loglik", loglik)
-    p = R.shape[0]
 
     if not draw_linear:
         return
+    p = R.shape[0]
     # Conditional posterior is N(theta_hat, P^-1); with P = R^T R,
     # theta_hat + R^-1 eps (eps ~ N(0, I)) has exactly that covariance.
     eps = numpyro.sample("linear_eps", dist.Normal(0.0, 1.0).expand([p]).to_event(1))

@@ -1232,8 +1232,27 @@ match; `pycream2.__version__` reads the installed metadata);
     - The curvature check evaluates the potential point by point through a plain jitted potential, not a
       separately compiled `vmap` of it (~4 s).
     Still left: compiling the gradient (~4.5 s) and the eager set-up (~6 s) dominate; a persistent JAX
-    compilation cache would remove most of both for repeat fits on the same data. The nested solve (the
-    default) shares these fixes but still takes minutes. Laptop timings vary up to ~2x between identical runs.
+    compilation cache would remove most of both for repeat fits on the same data. Laptop timings vary up to
+    ~2x between identical runs.
+    - **The nested solve (the default), 225 s -> ~90 s on the same set, same posterior** (10 October 2026).
+      Its exact Hessians (`jax.hessian` for the start, polish and modes; `jacfwd` of the gradient at grid
+      points) and its separately compiled inner gradient cost ~40 s of compilation: every Hessian is now
+      `fd_hessian` of the one compiled full gradient (`_Problem.hessian` along the eigenvectors of the grid
+      point's reference inner Hessian, redone if the spectrum moves by >4x). `fd_hessian`/`lbfgs_sd` live in
+      `nested_laplace.py`, shared with `optimise(method="laplace")`. What remains is ~2400 gradients, ~1270 of
+      them in the two rough search grids (scout and zoom, 108 points each, ~6 per point).
+    - **Measure before optimising the gradient:** of each ~43 ms gradient (2 bands), the marginal QR is only
+      ~5 ms; ~30 ms is the thin-disc response and its gradient (~15 ms per band, so ~200 ms for 13 bands). A
+      data-space QR (`model._marginal_solve`, when there are fewer points than linear parameters and the
+      linear parameters aren't needed) was added first on the wrong assumption that the QR dominated; it is
+      exact and tested (`test_data_space_marginal_matches_parameter_space_and_brute_force`) but saves ~2 ms.
+    - **`thin_disk_response(n_phi=100)`, was 200**: the response's Fourier transform at a fit's frequencies
+      is within 1e-7 of n_phi = 1600 at 30 degrees and 2e-3 at 80 (the near-side caustic converges slowly
+      at any n_phi), far below SNR-700 noise; posteriors and evidence unchanged to four figures (CREAM case
+      A, NGC 5548), 2.5x cheaper response. The unsmoothed 80-degree mean-lag drift is erratic in n_phi
+      (0.04-1.7%, the caustic aliasing against the lag grid; 200 passed the old 1% test by luck), so
+      `test_thin_disk_response_smoothing_days_zero_gives_exact_mean_lag_independence` now holds 0-40 degrees
+      to 0.1% and 0-80 to 2%. Gains: case A single Gaussian ~20 -> 14 s, NGC 5548 46 -> 36 s, nested 143 -> 91 s.
 
 ## Known rough edges / things to check before trusting results on real data
 

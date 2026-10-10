@@ -34,6 +34,7 @@ from .forward_model import (
     legendre_background_basis, mix_diffuse_continuum,
 )
 from .grid_utils import estimate_dt_min, graded_tau_grid, check_tau_grid_resolution, hybrid_frequency_grid
+from .nested_laplace import fd_hessian as _fd_hessian, lbfgs_sd as _lbfgs_sd
 from . import disc_sed
 from . import plotting
 from . import reporting
@@ -137,55 +138,6 @@ def _initialize_marginal_model(rng_seed, kwargs, init_strategy):
 
     return initialize_model(jax.random.PRNGKey(rng_seed), reverberation_model, model_kwargs=kwargs,
                             init_strategy=init_strategy, validate_grad=False)
-
-
-def _lbfgs_sd(result) -> np.ndarray:
-    """Per-parameter posterior scale from L-BFGS-B's inverse-Hessian estimate,
-    or ones if it has none."""
-    try:
-        return np.sqrt(np.clip(np.diag(result.hess_inv.todense()), 1e-12, None))
-    except AttributeError:
-        return np.ones(np.size(result.x))
-
-
-def _fd_hessian(grad, z, sd=None, basis=None, frac: float = 0.1):
-    """Hessian by central differences of the (compiled) gradient, with nothing
-    new to compile (``jax.hessian`` of the marginal potential took ~25 s to
-    compile for a 0.6 s evaluation). Returns ``(H, vals, vecs)``, ``H``
-    symmetric and ``vals, vecs`` its eigen-decomposition.
-
-    Measured along the eigenvectors of ``basis`` (a previous ``(vals, vecs)``),
-    each with a step of ``frac`` of that direction's own posterior standard
-    deviation: ``2 d`` gradient calls. Without a basis, a first pass along the
-    coordinate axes (steps ``frac * sd``) supplies one, and the eigenbasis pass
-    follows (``4 d`` calls). The second pass matters: the driver-amplitude/
-    band-gain ridge (CLAUDE.md decision #13) makes curvatures differ by ~1e4-1e5
-    between directions, and float32 errors of a coordinate-axis Hessian swamp
-    the ridge's small eigenvalue (posterior widths up to 40 per cent off on
-    CREAM case A; along the eigenvectors they match the exact Hessian). A step
-    on the posterior's own scale also smooths over the thin-disc potential's
-    tiny ripples, as the curvature check (``_posterior_scale_curvature``) does."""
-    z = np.asarray(z, dtype=np.float64)
-    d = z.size
-
-    def g(x):
-        return np.asarray(grad(x), dtype=np.float64)
-
-    def along(directions, steps):
-        cols = [(g(z + s * v) - g(z - s * v)) / (2 * s) for v, s in zip(directions.T, steps)]
-        return np.stack(cols, axis=1)  # column k: H @ direction_k
-
-    if basis is None:
-        steps = np.clip(frac * np.asarray(sd if sd is not None else np.ones(d), dtype=np.float64), 1e-5, 1.0)
-        h = along(np.eye(d), steps)
-        basis = np.linalg.eigh(0.5 * (h + h.T))
-    vals, vecs = basis
-    steps = np.clip(frac / np.sqrt(np.clip(np.abs(vals), 1e-12, None)), 1e-5, 1.0)
-    b = vecs.T @ along(vecs, steps)  # the Hessian in the eigenbasis
-    h = vecs @ (0.5 * (b + b.T)) @ vecs.T
-    h = 0.5 * (h + h.T)
-    vals, vecs = np.linalg.eigh(h)
-    return h, vals, vecs
 
 
 class _LinearDraws:

@@ -1272,6 +1272,11 @@ class EchoFit:
             z, f = np.asarray(result.x, dtype=np.float64), float(result.fun)
             if not np.isfinite(f):
                 return None
+            # Each restart's first Hessian from its own L-BFGS scale: carrying the
+            # previous restart's eigenvectors (another point) over left one
+            # restart's Hessian degenerate (a clipped eigenvalue, a 1e4 sd
+            # "posterior" width) on a ugriz synthetic set.
+            scale["sd"], scale["basis"] = _lbfgs_sd(result), None
             vals, vecs = curvature(z)
             n_newton, offset_in_sd, damping = 0, np.inf, 0.0
             for _ in range(20):
@@ -1313,7 +1318,16 @@ class EchoFit:
             # degrees, 26 lower in ln Z than the optimum at 8.02).
             return -p["f"] + 0.5 * float(np.linalg.slogdet(np.asarray(p["cov"], dtype=np.float64))[1])
 
-        best_index = max((i for i, p in enumerate(polished) if p is not None), key=lambda i: laplace_log_evidence(polished[i]))
+        # Only a converged restart with a positive-definite Hessian has a
+        # meaningful Laplace evidence: a clipped eigenvalue gives that direction
+        # a 1e8 variance and an inflated volume term, which picked an
+        # unconverged restart (Newton offset 2e4 sd) over a properly curved,
+        # lower-potential one on a ugriz synthetic set. Fall back to the lowest
+        # potential if no restart qualifies.
+        valid = [i for i, p in enumerate(polished) if p is not None]
+        sound = [i for i in valid if polished[i]["offset_in_sd"] < 0.25 and float(np.min(polished[i]["eigvals"])) > 0.0]
+        best_index = (max(sound, key=lambda i: laplace_log_evidence(polished[i])) if sound
+                      else min(valid, key=lambda i: polished[i]["f"]))
         best, peak = results[best_index], polished[best_index]
         eigvals, cov = peak["eigvals"], peak["cov"]
         timings["curvature_corrections"] = peak["curvature_corrections"]

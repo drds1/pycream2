@@ -334,3 +334,17 @@ def test_estimate_dt_min_degenerate_single_point_per_band_uses_t_span():
 def test_estimate_dt_min_without_t_span_skips_floor():
     dt_min = grid_utils.estimate_dt_min([np.array([0.0, 1.0, 5.0])])
     assert dt_min == pytest.approx(float(np.percentile([1.0, 4.0], 5.0)))
+
+
+def test_optimise_laplace_runs_four_restarts_by_default():
+    # One restart missed the main mode on a high-SNR synthetic driver
+    # (CLAUDE.md decision #30); the restarts also give the reproducibility check.
+    data = generate_synthetic_dataset(bands={"g": 4770.0, "i": 7625.0}, M_BH=1e8, n_obs_per_band=30, seed=0)
+    ef = EchoFit(M_BH=1e8)
+    for name, d in data["bands"].items():
+        ef.add_lightcurve(name, d["wavelength"], d["t"], d["y"], d["yerr"], background_order=0)
+    ef.build_grid(n_freq=8, n_tau=40)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ef.optimise(method="laplace", num_samples=10)
+    assert len(ef.optimise_restarts) == 4

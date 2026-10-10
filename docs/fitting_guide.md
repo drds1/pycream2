@@ -180,11 +180,10 @@ for a Gaussian posterior and good near one. It fails when:
   standard deviations. It reports the final figure as
   `ef.optimise_timings["newton_offset_in_sd"]` and warns above 0.25.
 
-**Checking reproducibility: multi-start.** `optimise(method="laplace")` runs
-one optimisation by default since October 2026 (each restart costs a full
-optimisation); pass `num_restarts=4` or more for this check. The nested
-solve keeps 4, which seed its mode search. Every restart is polished to its
-own optimum and compared with the best, the
+**Checking reproducibility: multi-start.** Every restart (`num_restarts`,
+default 4) is polished to its own optimum, and the one with the highest
+Laplace evidence (the most posterior mass, not the highest peak) is kept and
+compared with the others, the
 direct-solve counterpart of running several MCMC chains from different
 starting points. `ef.optimise_restarts` lists each restart's distance from
 the best (in posterior standard deviations) and how far above it sits in

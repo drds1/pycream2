@@ -253,8 +253,10 @@ def test_optimise_restarts_are_polished_and_compared():
         ef.optimise(num_samples=50, num_restarts=3, restart_scale=1.0, method="laplace")
     restarts = ef.optimise_restarts
     assert len(restarts) == 3
-    assert min(r["delta_potential"] for r in restarts) == 0.0
-    assert all(r["delta_potential"] >= 0.0 for r in restarts)
+    # The kept restart (highest Laplace evidence, not necessarily the lowest
+    # potential) is the reference everything else is measured from.
+    kept = [r for r in restarts if r["delta_potential"] == 0.0 and r["max_offset_in_sd"] == 0.0]
+    assert len(kept) >= 1
     assert restarts[0]["start_offset_in_sd"] == 0.0
     assert all(r["start_offset_in_sd"] > 0.0 for r in restarts[1:])
     assert ef.optimise_timings["restarts_agreeing"] == sum(r["agrees"] for r in restarts) < 3

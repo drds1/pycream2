@@ -1072,12 +1072,13 @@ class EchoFit:
         default before), described below, with its multi-start check
         (``optimise_restarts``). It is faster (by 1.4-1.8x on the synthetic
         cases measured) and exact for a Gaussian posterior, but understated
-        the uncertainty up to six-fold on weakly constraining data. It runs one
-        optimisation by default; ``num_restarts=4`` adds the multi-start
-        reproducibility check.
+        the uncertainty up to six-fold on weakly constraining data, and can
+        settle in the wrong one of several optima: on ten of the CREAM paper's
+        high-SNR synthetic drivers, local starts missed the main mode on one or
+        two, where the nested solve never did. Use it as a quick look.
         """
         if num_restarts is None:
-            num_restarts = 4 if method == "nested_laplace" else 1
+            num_restarts = 4
         if method == "nested_laplace":
             return self.nested_laplace(num_samples=num_samples, rng_seed=rng_seed, num_restarts=num_restarts,
                                        restart_scale=restart_scale, **nested_kwargs)
@@ -1089,7 +1090,7 @@ class EchoFit:
                                       restart_scale=restart_scale)
 
     def _optimise_laplace(
-        self, num_samples: int = 1000, num_restarts: int = 1, rng_seed: int = 0,
+        self, num_samples: int = 1000, num_restarts: int = 4, rng_seed: int = 0,
         restart_scale: float = 0.5,
     ):
         """``optimise(method="laplace")``. Directly solve for the posterior, without MCMC: maximise the
@@ -1164,10 +1165,15 @@ class EchoFit:
         num_restarts : int
             Optimisations, from the data-anchored initial point
             (``_init_strategy``) plus ``num_restarts - 1`` random
-            perturbations of it; the best is kept. Guards against a local
-            optimum, and measures reproducibility (above). Default 1 (since
-            October 2026, for speed: each restart costs a full optimisation);
-            pass 4 or more for the reproducibility check.
+            perturbations of it. Each is polished to its own optimum, and the
+            one with the highest Laplace evidence (peak and width, i.e. the most
+            posterior mass) is kept, not the highest peak: a narrow peak can be
+            higher yet hold far less mass. Guards against a local optimum, and
+            measures reproducibility (above). Default 4: a single start (the
+            default for a day in October 2026) missed the main mode on one of ten
+            high-SNR synthetic drivers. Restarts cannot guarantee the right mode
+            when there are several; :meth:`nested_laplace` (``optimise()``'s
+            default) searches the prior range for them.
         rng_seed : int
             Seeds the restart perturbations and the Laplace/linear draws.
         restart_scale : float
@@ -1298,7 +1304,16 @@ class EchoFit:
                         curvature_corrections=corrections["n"])
 
         polished = [polish(r) for r in results]
-        best_index = min((i for i, p in enumerate(polished) if p is not None), key=lambda i: polished[i]["f"])
+
+        def laplace_log_evidence(p):
+            # -U + 1/2 ln det(cov) (+ a constant): the posterior mass near the
+            # optimum, which the single Gaussian should describe. Choosing by the
+            # peak's potential alone picked a higher but much narrower peak on
+            # one of the CREAM paper's high-SNR drivers (log M Mdot 10.6 at 66
+            # degrees, 26 lower in ln Z than the optimum at 8.02).
+            return -p["f"] + 0.5 * float(np.linalg.slogdet(np.asarray(p["cov"], dtype=np.float64))[1])
+
+        best_index = max((i for i, p in enumerate(polished) if p is not None), key=lambda i: laplace_log_evidence(polished[i]))
         best, peak = results[best_index], polished[best_index]
         eigvals, cov = peak["eigvals"], peak["cov"]
         timings["curvature_corrections"] = peak["curvature_corrections"]
@@ -1352,9 +1367,11 @@ class EchoFit:
                 f"optimise(): only {n_agree} of {num_restarts} restarts reached the same optimum; "
                 + ", ".join(
                     f"restart {r['index']} ended {r['max_offset_in_sd']:.2g} sd away, "
-                    f"{r['delta_potential']:.3g} above it in potential" for r in worst
+                    f"{r['delta_potential']:+.3g} in potential" for r in worst
                 )
-                + ". The best is kept; a multimodal posterior needs .nested_laplace() or .fit() with several chains."
+                + ". The one with the highest Laplace evidence is kept, but the posterior has several optima and "
+                "this single Gaussian may describe the wrong one: use optimise() (the nested Laplace solve, "
+                "which searches for every mode) or .fit() with several chains."
             )
 
         t0 = time.perf_counter()

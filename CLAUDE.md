@@ -1227,8 +1227,18 @@ match; `pycream2.__version__` reads the installed metadata);
       NumPyro's eager model pass compiles 56 operations instead of 174 (inlined inside the jitted potential;
       the per-gradient cost is unchanged at ~42 ms). `_call_response` traces the wavelength (one compile for
       all bands) and falls back to a direct call for a response that can't take a traced wavelength.
-    - **One restart by default for `method="laplace"`** (author's decision; `num_restarts=4` restores the
-      multi-start check). The nested solve keeps 4.
+    - **`method="laplace"` keeps 4 restarts and picks by evidence, not peak height** (October 2026, from
+      reproducing the CREAM paper, `experiments/cream_paper_2026/`). A one-restart default (briefly, for
+      speed) missed the main mode on 1 of 10 high-SNR drivers (log M Mdot 4.7 at i = 12 degrees, ~340 lower
+      in ln Z). Restoring 4 restarts fixed that driver but chose a *higher, narrower* peak on another
+      (log M Mdot 10.6 at 66 degrees, 26 lower in ln Z than the mode at 8.02): restarts are now compared by
+      Laplace evidence, `-U + 1/2 ln det(cov)`, the mass the single Gaussian should describe. Even so, local
+      starts can miss the main mode where there are several (that driver has three optima), and which one a
+      start reaches depends on its random draw (it differed between Kaggle and a laptop): the nested solve,
+      whose scout grid searches the prior range, found the right mode on all 30 drivers of scenarios A, B, D.
+      **A scan of log_mdot and inclination for the start, with the other parameters held at their initial
+      values, was tried and made it worse** (6 of 10 drivers into the wrong mode): scoring points without
+      optimising the nuisance parameters misleads; doing it properly is the nested solve's scout grid.
     - The curvature check evaluates the potential point by point through a plain jitted potential, not a
       separately compiled `vmap` of it (~4 s).
     Still left: compiling the gradient (~4.5 s) and the eager set-up (~6 s) dominate; a persistent JAX
